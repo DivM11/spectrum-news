@@ -27,3 +27,6 @@ Thumbs.db
 
 # Scratch is local-only tracker state, not source
 .scratch/
+
+# Local agent skills (machine-specific paths)
+.opencode/
