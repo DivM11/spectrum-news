@@ -2,7 +2,7 @@ import json
 import os, sys, tempfile, unittest
 from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from spectrum_news import sources, search, analyzer, db
+from spectrum_news import sources, search, analyzer, cache, db
 
 
 class TestSources(unittest.TestCase):
@@ -88,6 +88,65 @@ class TestOpenRouterSearch(unittest.TestCase):
         self.assertEqual(out, [])
 
 
+class TestCache(unittest.TestCase):
+    def test_roundtrip(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.db")
+            key = cache.search_key("Rates", "Economics", "IN", "m", 9)
+            self.assertIsNone(cache.get(p, key, 3600))
+            arts = [{"url": "https://x.com/a", "title": "A"}]
+            cache.put(p, key, arts)
+            self.assertEqual(cache.get(p, key, 3600), arts)
+
+    def test_namespaces_isolate_same_key(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.db")
+            cache.put(p, cache.CacheKey("a", "k"), {"v": 1})
+            self.assertIsNone(cache.get(p, cache.CacheKey("b", "k"), 3600))
+            self.assertEqual(cache.get(p, cache.CacheKey("a", "k"), 3600), {"v": 1})
+
+    def test_search_key_normalizes_case_and_whitespace(self):
+        self.assertEqual(cache.search_key(" Rates ", "Economics", "", "m", 9),
+                         cache.search_key("rates", "economics", "", "m", 9))
+
+    def test_search_key_differs_per_inputs(self):
+        base = dict(topic="t", category="c", country="", search_model="m", max_articles=9)
+        self.assertNotEqual(cache.search_key(**{**base, "topic": "other"}),
+                            cache.search_key(**base))
+        self.assertNotEqual(cache.search_key(**{**base, "search_model": "other"}),
+                            cache.search_key(**base))
+
+    def test_analysis_key_tracks_content_model_temperature(self):
+        art = {"url": "https://x.com/a", "title": "A", "content": "body"}
+        same = {"url": "https://X.com/a/", "title": "A", "content": "body"}
+        self.assertEqual(cache.analysis_key(art, "m", 0.2), cache.analysis_key(same, "m", 0.2))
+        self.assertNotEqual(cache.analysis_key(art, "m", 0.2),
+                            cache.analysis_key({**art, "content": "changed"}, "m", 0.2))
+        self.assertNotEqual(cache.analysis_key(art, "m", 0.2),
+                            cache.analysis_key(art, "other", 0.2))
+        self.assertNotEqual(cache.analysis_key(art, "m", 0.2),
+                            cache.analysis_key(art, "m", 0.9))
+
+    def test_expired_and_disabled_ttl_miss(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.db")
+            key = cache.search_key("t", "c", "", "m", 9)
+            cache.put(p, key, [{"url": "u"}])
+            self.assertIsNone(cache.get(p, key, 0))
+            self.assertIsNone(cache.get(p, key, -5))
+
+    def test_clear_all_and_per_namespace(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.db")
+            skey = cache.search_key("t", "c", "", "m", 9)
+            akey = cache.analysis_key({"url": "u"}, "m", 0.2)
+            cache.put(p, skey, [{"url": "u"}])
+            cache.put(p, akey, {"factuality_score": 1})
+            self.assertEqual(cache.clear(p, cache.SEARCH_NS), 1)
+            self.assertIsNone(cache.get(p, skey, 3600))
+            self.assertIsNotNone(cache.get(p, akey, 3600))
+            self.assertEqual(cache.clear(p), 1)
+            self.assertIsNone(cache.get(p, akey, 3600))
 class TestAnalyzer(unittest.TestCase):
     def test_heuristic_keyless(self):
         a = {"title": "Test", "snippet": "short", "content": "", "url": "https://x.com", "outlet": "x.com"}
@@ -140,6 +199,79 @@ class TestPipeline(unittest.TestCase):
             self.assertEqual(len(out["results"]), 2)
             scores = [r["analysis"]["bias_score"] for r in out["results"]]
             self.assertEqual(scores, sorted(scores))  # spectrum ordering
+
+    def test_search_cached_between_runs(self):
+        from spectrum_news import pipeline
+
+        calls = []
+
+        def counting_search(topic, category, country="", max_articles=9, api_key="",
+                            search_model="m", base_url="https://x"):
+            calls.append((topic, category, country))
+            return [{"url": "https://x.com/a", "outlet": "x.com", "title": "A",
+                     "snippet": "s", "content": "s", "published": ""}]
+
+        def fake_analyze(article, model, key="", temperature=0.2):
+            return analyzer.heuristic_analysis(article)
+
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.db")
+            kw = dict(model="m", db_path=p, search_fn=counting_search,
+                      analyze_fn=fake_analyze, cache_ttl_seconds=3600)
+            first = pipeline.run_search("rally", "Politics", "", **kw)
+            second = pipeline.run_search("rally", "Politics", "", **kw)
+            self.assertFalse(first["search_cache_hit"])
+            self.assertTrue(second["search_cache_hit"])
+            self.assertEqual(len(calls), 1)  # search ran once
+            self.assertEqual(len(second["results"]), 1)
+
+    def test_analysis_cached_between_runs(self):
+        from spectrum_news import pipeline
+
+        search_calls, analyze_calls = [], []
+
+        def static_search(topic, category, country="", max_articles=9, api_key="",
+                          search_model="m", base_url="https://x"):
+            search_calls.append(search_model)
+            return [{"url": "https://x.com/a", "outlet": "x.com", "title": "A",
+                     "snippet": "steady body", "content": "steady body", "published": ""}]
+
+        def counting_analyze(article, model, key="", temperature=0.2):
+            analyze_calls.append(model)
+            return analyzer.heuristic_analysis(article)
+
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.db")
+            base = dict(model="m", db_path=p, search_fn=static_search,
+                        analyze_fn=counting_analyze, cache_ttl_seconds=3600)
+            # Different search models -> search cache misses, but the same article
+            # under the same rating model -> analysis cache hits.
+            out1 = pipeline.run_search("rally", "Politics", "", search_model="s1", **base)
+            out2 = pipeline.run_search("rally", "Politics", "", search_model="s2", **base)
+            self.assertFalse(any(r.get("cached") for r in out1["results"]))
+            self.assertFalse(out2["search_cache_hit"])
+            self.assertEqual(len(search_calls), 2)
+            self.assertEqual(len(analyze_calls), 1)
+            self.assertTrue(all(r.get("cached") for r in out2["results"]))
+
+    def test_cache_bypass_refetches(self):
+        from spectrum_news import pipeline
+
+        calls = []
+
+        def counting_search(topic, category, country="", max_articles=9, api_key="",
+                            search_model="m", base_url="https://x"):
+            calls.append(1)
+            return []
+
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.db")
+            kw = dict(model="m", db_path=p, search_fn=counting_search,
+                      analyze_fn=lambda a, m, k="", temperature=0.2: analyzer.heuristic_analysis(a))
+            pipeline.run_search("t", "Tech", "", use_cache=True, **kw)
+            out = pipeline.run_search("t", "Tech", "", use_cache=False, **kw)
+            self.assertFalse(out["search_cache_hit"])
+            self.assertEqual(len(calls), 2)
 
 
 if __name__ == "__main__":

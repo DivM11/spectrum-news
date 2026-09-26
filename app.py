@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 import streamlit as st
 
-from spectrum_news import config, db, pipeline
+from spectrum_news import cache, config, db, pipeline
 
 st.set_page_config(page_title="Spectrum News", page_icon="📰", layout="wide")
 
@@ -18,9 +18,18 @@ st.sidebar.header("Model config")
 preset = st.sidebar.selectbox("Rating model preset", config.MODEL_PRESETS, index=0)
 custom = st.sidebar.text_input("Custom rating model ID (overrides preset)", value="")
 MODEL = (custom.strip() or preset).strip() or config.RATING_MODEL
-SEARCH_MODEL = st.sidebar.text_input("Search model ID (web search)", value=config.SEARCH_MODEL)
+_search_presets = config.SEARCH_MODEL_PRESETS
+_search_default = _search_presets.index(config.SEARCH_MODEL) if config.SEARCH_MODEL in _search_presets else 0
+search_preset = st.sidebar.selectbox("Search model preset", _search_presets, index=_search_default)
+search_custom = st.sidebar.text_input("Custom search model ID (overrides preset)", value="")
+SEARCH_MODEL = (search_custom.strip() or search_preset).strip() or config.SEARCH_MODEL
 MAX_ARTICLES = st.sidebar.slider("Max articles", 3, 15, 9)
 TEMPERATURE = st.sidebar.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
+st.sidebar.caption(f"DB: `{config.DB_PATH}`")
+st.sidebar.caption(f"Search cache TTL: {config.CACHE_TTL_SECONDS}s")
+if st.sidebar.button("Clear search cache"):
+    removed = cache.clear(config.DB_PATH)
+    st.sidebar.success(f"Cleared {removed} cached search(es).")
 st.sidebar.caption(f"DB: `{config.DB_PATH}`")
 has_or = bool(os.environ.get("OPENROUTER_API_KEY"))
 st.sidebar.write(("✅ OpenRouter" if has_or else "⚠️ keyless (DDG + heuristic)"))
@@ -70,8 +79,14 @@ elif run_btn:
             max_articles=MAX_ARTICLES, temperature=TEMPERATURE,
             db_path=config.DB_PATH,
             openrouter_key=os.environ.get("OPENROUTER_API_KEY", ""),
+            cache_ttl_seconds=config.CACHE_TTL_SECONDS,
         )
-    st.success(f"Run #{out['run_id']}: {len(out['results'])} articles · model `{MODEL}`")
+    st.success(f"Run #{out['run_id']}: {len(out['results'])} articles · search `{out['search_model']}` · rating `{MODEL}`")
+    n_cached = sum(1 for r in out["results"] if r.get("cached"))
+    if out.get("search_cache_hit"):
+        st.caption("Search served from cache — same query, model, and article limit as a recent run.")
+    if n_cached and not out.get("search_cache_hit"):
+        st.caption(f"{n_cached}/{len(out['results'])} analyses served from cache.")
     render = out["results"]
 else:
     render = None

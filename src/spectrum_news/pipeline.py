@@ -4,6 +4,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 
 from . import analyzer as analyzer_mod
+from . import cache as cache_mod
 from . import db as db_mod
 from . import search as search_mod
 from . import sources as sources_mod
@@ -13,6 +14,7 @@ def run_search(topic: str, category: str, country: str = "", model: str = "opena
                search_model: str | None = None,
                max_articles: int = 9, temperature: float = 0.2, db_path: str = "data/spectrum.db",
                openrouter_key: str = "", base_url: str = "https://openrouter.ai/api/v1",
+               cache_ttl_seconds: int = 3600, use_cache: bool = True,
                search_fn=None, analyze_fn=None) -> dict:
     """Full Search run. search_fn/analyze_fn injectable for tests/demos.
 
@@ -23,9 +25,15 @@ def run_search(topic: str, category: str, country: str = "", model: str = "opena
     analyze_fn = analyze_fn or analyzer_mod.analyze_article
     search_model = search_model or model
 
-    articles = search_fn(topic, category, country, max_articles=max_articles,
-                         api_key=openrouter_key, search_model=search_model,
-                         base_url=base_url)
+    skey = cache_mod.search_key(topic, category, country or "", search_model, max_articles)
+    articles = cache_mod.get(db_path, skey, cache_ttl_seconds) if use_cache else None
+    search_cache_hit = articles is not None
+    if articles is None:
+        articles = search_fn(topic, category, country, max_articles=max_articles,
+                             api_key=openrouter_key, search_model=search_model,
+                             base_url=base_url)
+        if use_cache:
+            cache_mod.put(db_path, skey, articles or [])
     articles = (articles or [])[:max_articles]
 
     db_mod.init_db(db_path)
@@ -33,8 +41,14 @@ def run_search(topic: str, category: str, country: str = "", model: str = "opena
 
     def _analyze(article: dict) -> dict:
         profile = sources_mod.source_profile(article.get("url", ""))
-        analysis = analyze_fn(article, model, openrouter_key, temperature=temperature)
-        return {"article": article, "profile": profile, "analysis": analysis}
+        akey = cache_mod.analysis_key(article, model, temperature)
+        analysis = cache_mod.get(db_path, akey, cache_ttl_seconds) if use_cache else None
+        cached = analysis is not None
+        if analysis is None:
+            analysis = analyze_fn(article, model, openrouter_key, temperature=temperature)
+            if use_cache:
+                cache_mod.put(db_path, akey, analysis)
+        return {"article": article, "profile": profile, "analysis": analysis, "cached": cached}
 
     with ThreadPoolExecutor(max_workers=min(6, max(1, len(articles)))) as pool:
         results = list(pool.map(_analyze, articles)) if articles else []
@@ -46,4 +60,4 @@ def run_search(topic: str, category: str, country: str = "", model: str = "opena
     results.sort(key=lambda r: float(r["analysis"].get("bias_score", 0)))
     return {"run_id": run_id, "topic": topic, "category": category,
             "country": country, "model": model, "search_model": search_model,
-            "results": results}
+            "search_cache_hit": search_cache_hit, "results": results}
