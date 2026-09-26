@@ -10,7 +10,7 @@ from . import search as search_mod
 from . import sources as sources_mod
 
 
-def run_search(topic: str, category: str, country: str = "", model: str = "openai/gpt-4o-mini",
+def run_search(topic: str, category: str, country: str = "", model: str = "google/gemini-2.5-flash-lite",
                search_model: str | None = None,
                max_articles: int = 9, temperature: float = 0.2, db_path: str = "data/spectrum.db",
                openrouter_key: str = "", base_url: str = "https://openrouter.ai/api/v1",

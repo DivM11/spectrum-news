@@ -18,5 +18,5 @@ Implementation details live in specs/ADRs, never here.
 - **Factuality score**: 0-100 LLM estimate of how well an Article's verifiable claims hold up. Not a truth certificate.
 - **Bias label / Bias score**: Left (-3) … Center (0) … Right (+3) lean of an Article's framing, plus loaded-language flags. Distinct from Outlet's MBFC bias.
 - **Spectrum view**: UI comparison of Article Analyses for one Search run, grouped/ordered by Bias score so left/center/right coverage is visible at a glance.
-- **Rating model**: the OpenRouter model ID used for Article Analysis. User-configurable from the sidebar (e.g. `openai/gpt-4o-mini`).
+- **Rating model**: the OpenRouter model ID used for Article Analysis. User-configurable from the sidebar (e.g. `google/gemini-2.5-flash-lite`).
 - **Evidence set**: the collection of Articles + Source Profiles for one Search run that the Spectrum view compares.

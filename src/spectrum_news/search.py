@@ -159,7 +159,7 @@ def _run_one(query: str, *, max_results: int, api_key: str,
 
 def fanout_search(topic: str, category: str, country: str = "",
                   max_results_per_query: int = 5, api_key: str = "",
-                  search_model: str = "openai/gpt-4o-mini",
+                  search_model: str = "deepseek/deepseek-v4-flash",
                   base_url: str = "https://openrouter.ai/api/v1",
                   max_articles: int = 12) -> list[dict]:
     queries = build_queries(topic, category, country)

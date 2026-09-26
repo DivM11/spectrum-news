@@ -99,7 +99,7 @@ def analyze_article(article: dict, model: str, api_key: str = "",
         f"{base_url.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json={
-            "model": model or "openai/gpt-4o-mini",
+            "model": model or "google/gemini-2.5-flash-lite",
             "temperature": temperature,
             "messages": [
                 {"role": "system", "content": "Return strict JSON only."},

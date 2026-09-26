@@ -17,7 +17,7 @@ model family can do both gathering and analysis.
 
 - Primary: **OpenRouter chat completions** with
   `tools: [{type: "openrouter:web_search", parameters: {max_results, max_total_results}}]`,
-  using a dedicated **Search model** (`SEARCH_MODEL`, default `openai/gpt-4o-mini`),
+  using a dedicated **Search model** (`SEARCH_MODEL`, default `deepseek/deepseek-v4-flash`),
   prompted to return gathered articles as strict JSON (`url, title, snippet, published`).
 - The Search model requires tool-calling support; sidebar + env configurable
   independently of the Rating model.
