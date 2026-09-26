@@ -24,6 +24,6 @@ def get(key: str, default: str = "") -> str:
 
 OPENROUTER_API_KEY = get("OPENROUTER_API_KEY", "")
 RATING_MODEL = get("RATING_MODEL", "openai/gpt-4o-mini")
-TAVILY_API_KEY = get("TAVILY_API_KEY", "")
+SEARCH_MODEL = get("SEARCH_MODEL", "openai/gpt-4o-mini")
 DB_PATH = get("DB_PATH", "data/spectrum.db")
 OPENROUTER_BASE_URL = get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")

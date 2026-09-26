@@ -1,7 +1,7 @@
 # ADR 0002 — Search providers: Tavily primary, DuckDuckGo fallback, parallel fan-out
 
 Date: 2026-09-26
-Status: accepted
+Status: superseded by 0004 on 2026-09-26 (Tavily dropped; OpenRouter web-search model is the primary).
 
 ## Context
 

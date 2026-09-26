@@ -1,8 +1,25 @@
-"""Parallel web search: Tavily primary, DuckDuckGo fallback. Normalized Article dicts."""
+"""Parallel web search via an OpenRouter web-search model, DDG fallback.
+
+Primary path calls OpenRouter chat completions with the ``openrouter:web_search``
+server tool, asking the model to return gathered articles as strict JSON.
+Normalized Article dicts throughout.
+"""
 from __future__ import annotations
 
+import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
+
+SEARCH_PROMPT = """You have live web search. Find {n} recent news articles about the QUERY below,
+covering DIFFERENT outlets and perspectives (left, center, right, international if relevant).
+
+QUERY: {query}
+
+Return STRICT JSON only (no markdown fences, no commentary): a JSON array where each item is
+{{"url": "<canonical article url>", "title": "<headline>", "snippet": "<1-2 sentence excerpt>",
+"published": "<date if known, else empty string>"}}.
+Prefer full article URLs over homepages. At most {n} items."""
 
 
 def build_queries(topic: str, category: str, country: str) -> list[str]:
@@ -54,37 +71,62 @@ def dedupe(articles: list[dict]) -> list[dict]:
     return out
 
 
-def _tavily_search(query: str, api_key: str, max_results: int) -> list[dict]:
+def _strip_fences(s: str) -> str:
+    return re.sub(r"^```(?:json)?|```$", "", (s or "").strip(), flags=re.MULTILINE).strip()
+
+
+def parse_articles(s: str) -> list[dict]:
+    """Lenient parse of the search model's JSON: bare array or {"articles": [...]}."""
+    text = _strip_fences(s)
+    data = None
+    try:
+        data = json.loads(text)
+    except Exception:
+        m = re.search(r"(\{.*\}|\[.*\])", text, flags=re.DOTALL)
+        if m:
+            try:
+                data = json.loads(m.group(1))
+            except Exception:
+                return []
+    if isinstance(data, dict):
+        data = data.get("articles", [])
+    if not isinstance(data, list):
+        return []
+    out = []
+    for it in data:
+        if not isinstance(it, dict) or not it.get("url"):
+            continue
+        out.append(
+            normalize(it.get("url", ""), it.get("title", ""),
+                      it.get("snippet", it.get("content", "")),
+                      str(it.get("published", it.get("published_date", ""))))
+        )
+    return out
+
+
+def _openrouter_search(query: str, *, model: str, api_key: str,
+                       base_url: str, max_results: int, timeout: int = 90) -> list[dict]:
     import requests
 
     resp = requests.post(
-        "https://api.tavily.com/search",
-        json={"query": query, "max_results": max_results, "search_depth": "basic"},
-        headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-        timeout=20,
+        f"{base_url.rstrip('/')}/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Return strict JSON only."},
+                {"role": "user", "content": SEARCH_PROMPT.format(query=query, n=max_results)},
+            ],
+            "tools": [{
+                "type": "openrouter:web_search",
+                "parameters": {"max_results": max_results, "max_total_results": max_results},
+            }],
+        },
+        timeout=timeout,
     )
-    # Tavily actually expects x-api-key header; support both
-    if resp.status_code in (401, 403):
-        resp = requests.post(
-            "https://api.tavily.com/search",
-            json={"query": query, "max_results": max_results},
-            headers={"x-api-key": api_key},
-            timeout=20,
-        )
     resp.raise_for_status()
-    data = resp.json()
-    items = data.get("results", data if isinstance(data, list) else [])
-    out = []
-    for it in items if isinstance(items, list) else []:
-        out.append(
-            normalize(
-                it.get("url", ""),
-                it.get("title", ""),
-                it.get("content", it.get("snippet", "")),
-                str(it.get("published_date", it.get("published", ""))),
-            )
-        )
-    return out
+    content = resp.json()["choices"][0]["message"]["content"]
+    return parse_articles(content)
 
 
 def _ddg_search(query: str, max_results: int) -> list[dict]:
@@ -99,10 +141,12 @@ def _ddg_search(query: str, max_results: int) -> list[dict]:
     return out
 
 
-def _run_one(query: str, max_results: int, tavily_key: str) -> list[dict]:
-    if tavily_key:
+def _run_one(query: str, *, max_results: int, api_key: str,
+             search_model: str, base_url: str) -> list[dict]:
+    if api_key:
         try:
-            found = _tavily_search(query, tavily_key, max_results)
+            found = _openrouter_search(query, model=search_model, api_key=api_key,
+                                       base_url=base_url, max_results=max_results)
             if found:
                 return found
         except Exception:
@@ -114,12 +158,18 @@ def _run_one(query: str, max_results: int, tavily_key: str) -> list[dict]:
 
 
 def fanout_search(topic: str, category: str, country: str = "",
-                  max_results_per_query: int = 5, tavily_key: str = "",
+                  max_results_per_query: int = 5, api_key: str = "",
+                  search_model: str = "openai/gpt-4o-mini",
+                  base_url: str = "https://openrouter.ai/api/v1",
                   max_articles: int = 12) -> list[dict]:
     queries = build_queries(topic, category, country)
     if not queries:
         return []
     with ThreadPoolExecutor(max_workers=min(6, len(queries))) as pool:
-        batches = list(pool.map(lambda q: _run_one(q, max_results_per_query, tavily_key), queries))
+        batches = list(pool.map(
+            lambda q: _run_one(q, max_results=max_results_per_query, api_key=api_key,
+                               search_model=search_model, base_url=base_url),
+            queries,
+        ))
     merged = [a for batch in batches for a in batch if a.get("url")]
     return dedupe(merged)[:max_articles]

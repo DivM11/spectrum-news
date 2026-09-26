@@ -13,18 +13,17 @@ from spectrum_news import config, db, pipeline
 
 st.set_page_config(page_title="Spectrum News", page_icon="📰", layout="wide")
 
-# ---- Sidebar: rating model config ----
-st.sidebar.header("⚙️ Rating model")
-preset = st.sidebar.selectbox("Model preset", config.MODEL_PRESETS, index=0)
-custom = st.sidebar.text_input("Custom model ID (overrides preset)", value="")
+# ---- Sidebar: model config ----
+st.sidebar.header("Model config")
+preset = st.sidebar.selectbox("Rating model preset", config.MODEL_PRESETS, index=0)
+custom = st.sidebar.text_input("Custom rating model ID (overrides preset)", value="")
 MODEL = (custom.strip() or preset).strip() or config.RATING_MODEL
+SEARCH_MODEL = st.sidebar.text_input("Search model ID (web search)", value=config.SEARCH_MODEL)
 MAX_ARTICLES = st.sidebar.slider("Max articles", 3, 15, 9)
 TEMPERATURE = st.sidebar.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
 st.sidebar.caption(f"DB: `{config.DB_PATH}`")
 has_or = bool(os.environ.get("OPENROUTER_API_KEY"))
-has_tav = bool(os.environ.get("TAVILY_API_KEY"))
-st.sidebar.write(("✅" if has_or else "⚠️ keyless") + " OpenRouter")
-st.sidebar.write(("✅" if has_tav else "⚠️ DDG fallback") + " Tavily")
+st.sidebar.write(("✅ OpenRouter" if has_or else "⚠️ keyless (DDG + heuristic)"))
 
 st.title("📰 Spectrum News")
 st.caption("AI fact-checking + bias highlighting across outlets. Scores are estimates — open the sources.")
@@ -67,16 +66,16 @@ elif run_btn:
     with st.spinner("Searching outlets in parallel → profiling → analyzing…"):
         out = pipeline.run_search(
             topic.strip(), category, COUNTRY, model=MODEL,
+            search_model=(SEARCH_MODEL.strip() or MODEL),
             max_articles=MAX_ARTICLES, temperature=TEMPERATURE,
             db_path=config.DB_PATH,
-            tavily_key=os.environ.get("TAVILY_API_KEY", ""),
             openrouter_key=os.environ.get("OPENROUTER_API_KEY", ""),
         )
     st.success(f"Run #{out['run_id']}: {len(out['results'])} articles · model `{MODEL}`")
     render = out["results"]
 else:
     render = None
-    st.info("Enter a Topic, pick a Category, hit **Run fact-check**. Works keyless (DDG + heuristic); add `TAVILY_API_KEY` + `OPENROUTER_API_KEY` for full quality.")
+    st.info("Enter a Topic, pick a Category, hit **Run fact-check**. Works keyless (DDG + heuristic); add `OPENROUTER_API_KEY` for web-search + LLM analysis.")
 
 # ---- Spectrum view ----
 if render is not None:
