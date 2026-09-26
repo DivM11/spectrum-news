@@ -1,0 +1,43 @@
+domain,factuality,bias
+bbc.com,High,Center
+reuters.com,Very High,Center
+apnews.com,Very High,Center
+nytimes.com,High,Lean-Left
+washingtonpost.com,High,Lean-Left
+theguardian.com,High,Lean-Left
+wsj.com,High,Center
+bloomberg.com,High,Center
+economist.com,High,Lean-Right
+ft.com,High,Center
+npr.org,High,Lean-Left
+pbs.org,High,Center
+abcnews.go.com,High,Lean-Left
+cbsnews.com,High,Lean-Left
+nbcnews.com,High,Lean-Left
+cnn.com,Mostly Factual,Lean-Left
+foxnews.com,Mixed,Right
+usatoday.com,High,Center
+aljazeera.com,High,Lean-Left
+dw.com,High,Center
+france24.com,High,Center
+ndtv.com,High,Center
+thehindu.com,High,Center
+indianexpress.com,High,Center
+nature.com,Very High,Center
+science.org,Very High,Center
+techcrunch.com,High,Center
+theverge.com,High,Lean-Left
+wired.com,High,Lean-Left
+arstechnica.com,Very High,Center
+forbes.com,High,Center
+fortune.com,High,Center
+cnbc.com,Mostly Factual,Center
+noaa.gov,Very High,Center
+nasa.gov,Very High,Center
+ipcc.ch,Very High,Center
+who.int,High,Center
+bbc.co.uk,High,Center
+breitbart.com,Low,Far-Right
+dailykos.com,Mixed,Left
+newsmax.com,Low,Right
+huffpost.com,Mostly Factual,Left
