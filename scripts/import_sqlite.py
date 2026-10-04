@@ -14,6 +14,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from sqlalchemy import text  # noqa: E402
+
 from spectrum_news import db as db_mod  # noqa: E402
 from spectrum_news import schema  # noqa: E402
 
@@ -54,6 +56,15 @@ def main() -> None:
                 continue
             print(f"{table_name}: {n} rows")
             total += n
+        if engine.dialect.name == "postgresql":
+            # Explicit ids don't advance serial sequences; reset them to max(id).
+            # Table names are internal constants (see schema.py), never user input.
+            with engine.begin() as conn:
+                for table_name in ("search_runs", "articles", "analyses"):
+                    conn.execute(text(
+                        "SELECT setval(pg_get_serial_sequence('{t}', 'id'), "
+                        "(SELECT COALESCE(MAX(id), 1) FROM {t}))".format(t=table_name)))
+                    print(f"{table_name}: sequence reset")
     finally:
         src.close()
     print(f"imported {total} rows into {dst if args.dst else 'throwaway SQLite (verify-only)'}")
