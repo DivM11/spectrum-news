@@ -67,6 +67,29 @@ def parse_json_lenient(s: str) -> dict | None:
     return None
 
 
+BIAS_LABELS = ("Far-Left", "Left", "Lean-Left", "Center",
+               "Lean-Right", "Right", "Far-Right")
+
+
+def canonical_bias_label(label: str, score: float) -> str:
+    """Coerce free-form LLM labels onto the canonical set via the score."""
+    if label in BIAS_LABELS:
+        return label
+    if score <= -2.5:
+        return "Far-Left"
+    if score <= -1.5:
+        return "Left"
+    if score <= -0.5:
+        return "Lean-Left"
+    if score < 0.5:
+        return "Center"
+    if score < 1.5:
+        return "Lean-Right"
+    if score < 2.5:
+        return "Right"
+    return "Far-Right"
+
+
 def sanitize(parsed: dict | None, article: dict) -> dict:
     base = heuristic_analysis(article)
     if not isinstance(parsed, dict):
@@ -75,7 +98,8 @@ def sanitize(parsed: dict | None, article: dict) -> dict:
         out = dict(base)
         out["factuality_score"] = float(max(0, min(100, float(parsed.get("factuality_score", base["factuality_score"])))))
         out["bias_score"] = float(max(-3, min(3, float(parsed.get("bias_score", base["bias_score"])))))
-        out["bias_label"] = str(parsed.get("bias_label", base["bias_label"]))
+        out["bias_label"] = canonical_bias_label(
+            str(parsed.get("bias_label", base["bias_label"])), out["bias_score"])
         out["summary"] = str(parsed.get("summary", base["summary"]))[:1200]
         out["key_claims"] = list(parsed.get("key_claims", base["key_claims"]))[:8]
         out["loaded_phrases"] = list(parsed.get("loaded_phrases", base["loaded_phrases"]))[:8]

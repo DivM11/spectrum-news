@@ -2,7 +2,7 @@ import json
 import os, sys, tempfile, unittest
 from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from spectrum_news import sources, search, analyzer, cache, db
+from spectrum_news import sources, search, analyzer, cache, config, db
 
 
 class TestSources(unittest.TestCase):
@@ -87,6 +87,39 @@ class TestOpenRouterSearch(unittest.TestCase):
         d.assert_called_once_with("q", 3)
         self.assertEqual(out, [])
 
+    def test_allowed_domains_sent_to_tool(self):
+        with mock.patch("requests.post", return_value=self._resp("[]")) as p:
+            search._openrouter_search("q", model="m", api_key="k",
+                                      base_url="https://x", max_results=4,
+                                      allowed_domains=[" BBC.com ", "reuters.com"])
+        params = p.call_args.kwargs["json"]["tools"][0]["parameters"]
+        self.assertEqual(params["allowed_domains"], ["bbc.com", "reuters.com"])
+
+    def test_no_domains_means_no_restriction(self):
+        with mock.patch("requests.post", return_value=self._resp("[]")) as p:
+            search._openrouter_search("q", model="m", api_key="k",
+                                      base_url="https://x", max_results=4)
+        params = p.call_args.kwargs["json"]["tools"][0]["parameters"]
+        self.assertNotIn("allowed_domains", params)
+
+
+class TestDefaults(unittest.TestCase):
+    def test_prompts_cover_all_categories(self):
+        self.assertEqual(set(config.DEFAULT_PROMPTS), set(config.CATEGORIES))
+        self.assertTrue(all(v.strip() for v in config.DEFAULT_PROMPTS.values()))
+
+    def test_default_country_is_selectable(self):
+        self.assertIn(config.DEFAULT_COUNTRY, config.COUNTRY_PRESETS)
+
+    def test_outlet_domains_all_and_empty_unrestricted(self):
+        self.assertEqual(config.outlet_domains([]), [])
+        self.assertEqual(config.outlet_domains([config.OUTLET_ALL]), [])
+        self.assertEqual(config.outlet_domains([config.OUTLET_ALL, "BBC"]), [])
+
+    def test_outlet_domains_maps_selection(self):
+        self.assertEqual(config.outlet_domains(["BBC", "Reuters"]), ["bbc.com", "reuters.com"])
+        self.assertEqual(config.outlet_domains(["Nope"]), [])
+
 
 class TestCache(unittest.TestCase):
     def test_roundtrip(self):
@@ -115,6 +148,10 @@ class TestCache(unittest.TestCase):
                             cache.search_key(**base))
         self.assertNotEqual(cache.search_key(**{**base, "search_model": "other"}),
                             cache.search_key(**base))
+        self.assertNotEqual(cache.search_key(**{**base, "allowed_domains": ["bbc.com"]}),
+                            cache.search_key(**base))
+        self.assertEqual(cache.search_key(**{**base, "allowed_domains": ["BBC.com "]}),
+                         cache.search_key(**{**base, "allowed_domains": ["bbc.com"]}))
 
     def test_analysis_key_tracks_content_model_temperature(self):
         art = {"url": "https://x.com/a", "title": "A", "content": "body"}
@@ -158,6 +195,15 @@ class TestAnalyzer(unittest.TestCase):
         parsed = analyzer.parse_json_lenient('```json\n{"a": 1}\n```')
         self.assertEqual(parsed, {"a": 1})
 
+    def test_sanitize_coerces_unknown_label(self):
+        art = {"title": "T", "snippet": "s", "content": "s"}
+        out = analyzer.sanitize({"bias_label": "Leftish", "bias_score": -2}, art)
+        self.assertEqual(out["bias_label"], "Left")
+        out = analyzer.sanitize({"bias_label": "???", "bias_score": 2.8}, art)
+        self.assertEqual(out["bias_label"], "Far-Right")
+        out = analyzer.sanitize({"bias_label": "Right", "bias_score": 2}, art)
+        self.assertEqual(out["bias_label"], "Right")
+
 
 class TestDb(unittest.TestCase):
     def test_roundtrip(self):
@@ -181,7 +227,7 @@ class TestPipeline(unittest.TestCase):
         from spectrum_news import pipeline
 
         def fake_search(topic, category, country="", max_articles=9, api_key="",
-                        search_model="m", base_url="https://x"):
+                        search_model="m", base_url="https://x", allowed_domains=None):
             return [
                 {"url": "https://reuters.com/a", "outlet": "reuters.com", "title": "A",
                  "snippet": "markets rally", "content": "markets rally", "published": ""},
@@ -206,7 +252,7 @@ class TestPipeline(unittest.TestCase):
         calls = []
 
         def counting_search(topic, category, country="", max_articles=9, api_key="",
-                            search_model="m", base_url="https://x"):
+                            search_model="m", base_url="https://x", allowed_domains=None):
             calls.append((topic, category, country))
             return [{"url": "https://x.com/a", "outlet": "x.com", "title": "A",
                      "snippet": "s", "content": "s", "published": ""}]
@@ -231,7 +277,7 @@ class TestPipeline(unittest.TestCase):
         search_calls, analyze_calls = [], []
 
         def static_search(topic, category, country="", max_articles=9, api_key="",
-                          search_model="m", base_url="https://x"):
+                          search_model="m", base_url="https://x", allowed_domains=None):
             search_calls.append(search_model)
             return [{"url": "https://x.com/a", "outlet": "x.com", "title": "A",
                      "snippet": "steady body", "content": "steady body", "published": ""}]
@@ -254,13 +300,40 @@ class TestPipeline(unittest.TestCase):
             self.assertEqual(len(analyze_calls), 1)
             self.assertTrue(all(r.get("cached") for r in out2["results"]))
 
+    def test_failing_article_falls_back_without_aborting_run(self):
+        from spectrum_news import pipeline
+
+        def ok_search(topic, category, country="", max_articles=9, api_key="",
+                      search_model="m", base_url="https://x", allowed_domains=None):
+            return [
+                {"url": "https://x.com/a", "outlet": "x.com", "title": "A",
+                 "snippet": "s", "content": "s", "published": ""},
+                {"url": "https://x.com/b", "outlet": "x.com", "title": "B",
+                 "snippet": "s", "content": "s", "published": ""},
+            ]
+
+        def flaky_analyze(article, model, key="", temperature=0.2):
+            if article["url"].endswith("/a"):
+                raise RuntimeError("LLM 500")
+            return analyzer.heuristic_analysis(article)
+
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.db")
+            out = pipeline.run_search("t", "Tech", "", model="m", db_path=p,
+                                      search_fn=ok_search, analyze_fn=flaky_analyze)
+            self.assertEqual(len(out["results"]), 2)
+            by_url = {r["article"]["url"]: r for r in out["results"]}
+            self.assertIn("heuristic fallback", by_url["https://x.com/a"]["analysis"]["verdict"])
+            rows = db.fetch_run_evidence(p, out["run_id"])
+            self.assertEqual(len(rows), 2)
+
     def test_cache_bypass_refetches(self):
         from spectrum_news import pipeline
 
         calls = []
 
         def counting_search(topic, category, country="", max_articles=9, api_key="",
-                            search_model="m", base_url="https://x"):
+                            search_model="m", base_url="https://x", allowed_domains=None):
             calls.append(1)
             return []
 
@@ -272,6 +345,81 @@ class TestPipeline(unittest.TestCase):
             out = pipeline.run_search("t", "Tech", "", use_cache=False, **kw)
             self.assertFalse(out["search_cache_hit"])
             self.assertEqual(len(calls), 2)
+
+
+class TestStore(unittest.TestCase):
+    def test_config_ttl_tolerates_garbage(self):
+        import importlib
+        from spectrum_news import config as config_mod
+        with mock.patch.dict(os.environ, {"CACHE_TTL_SECONDS": "bogus"}):
+            reloaded = importlib.reload(config_mod)
+            try:
+                self.assertEqual(reloaded.CACHE_TTL_SECONDS, 3600)
+            finally:
+                importlib.reload(config_mod)
+    def test_resolve_url(self):
+        url = db.resolve_url("postgresql+psycopg://u:p@h/db")
+        self.assertEqual(url, "postgresql+psycopg://u:p@h/db")
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "x.db")
+            self.assertTrue(db.resolve_url(p).startswith("sqlite:///"))
+            self.assertTrue(db.resolve_url(p).endswith("x.db"))
+
+    def test_sqlite_url_form_works(self):
+        with tempfile.TemporaryDirectory() as d:
+            url = "sqlite:///" + os.path.join(d, "u.db")
+            db.init_db(url)
+            rid = db.create_run(url, "T", "Tech", "", "m")
+            self.assertEqual([r["id"] for r in db.list_runs(url)], [rid])
+
+    def test_import_sqlite_roundtrip(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "src.db")
+            db.init_db(src)
+            rid = db.create_run(src, "T", "Tech", "US", "m")
+            aid = db.insert_article(src, rid, {"url": "https://x.com/a", "outlet": "x.com",
+                                               "title": "T", "snippet": "S", "content": "S",
+                                               "published": ""})
+            db.insert_analysis(src, aid, {"factuality_score": 80, "bias_label": "Center",
+                                          "bias_score": 0, "summary": "s", "key_claims": ["c"],
+                                          "loaded_phrases": [], "verdict": "v"},
+                               {"mbfc_factuality": "High", "mbfc_bias": "Center", "popularity_rank": 5})
+            dst = "sqlite:///" + os.path.join(d, "dst.db")
+            script = os.path.normpath(os.path.join(os.path.dirname(__file__), "..",
+                                                   "scripts", "import_sqlite.py"))
+            proc = subprocess.run(["uv", "run", "python", script,
+                                   "--from", src, "--to", dst],
+                                  capture_output=True, text=True, timeout=120)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            rows = db.fetch_run_evidence(dst, rid)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["bias_label"], "Center")
+    """Headless Streamlit regression tests (AppTest). Catches script-level
+    crashes such as duplicate widget IDs without launching a browser."""
+
+class TestAppSmoke(unittest.TestCase):
+    def _run_app(self):
+        from streamlit.testing.v1 import AppTest
+        app_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "app.py"))
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(config, "DATABASE_URL", os.path.join(tmp.name, "ui.db"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return AppTest.from_file(app_path, default_timeout=30).run()
+
+    def test_initial_render_has_no_exception(self):
+        at = self._run_app()
+        self.assertFalse(at.exception)
+
+    def test_chip_fills_topic_and_category(self):
+        at = self._run_app()
+        at.button(key="chip_Politics").click().run()
+        self.assertFalse(at.exception)
+        self.assertEqual(at.session_state["topic"], config.DEFAULT_PROMPTS["Politics"])
+        self.assertEqual(at.session_state["category"], "Politics")
+        self.assertEqual(at.session_state["country"], config.DEFAULT_COUNTRY)
 
 
 if __name__ == "__main__":
