@@ -231,7 +231,7 @@ class TestPipeline(unittest.TestCase):
     def test_end_to_end_with_fakes(self):
         from spectrum_news import pipeline
 
-        def fake_search(spec):
+        def fake_search(query, spec):
             return [
                 {"url": "https://reuters.com/a", "outlet": "reuters.com", "title": "A",
                  "snippet": "markets rally", "content": "markets rally", "published": ""},
@@ -245,7 +245,7 @@ class TestPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.db")
             out = pipeline.run_search("rally", "Politics", "", model="m", db_url=p,
-                                      search_fn=fake_search, analyze_fn=fake_analyze)
+                                      search_query_fn=fake_search, analyze_fn=fake_analyze)
             self.assertEqual(len(out["results"]), 2)
             scores = [r["analysis"]["bias_score"] for r in out["results"]]
             self.assertEqual(scores, sorted(scores))  # spectrum ordering
@@ -255,7 +255,7 @@ class TestPipeline(unittest.TestCase):
 
         calls = []
 
-        def counting_search(spec):
+        def counting_search(query, spec):
             calls.append((spec.topic, spec.category, spec.country))
             return [{"url": "https://x.com/a", "outlet": "x.com", "title": "A",
                      "snippet": "s", "content": "s", "published": ""}]
@@ -265,13 +265,13 @@ class TestPipeline(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.db")
-            kw = dict(model="m", db_url=p, search_fn=counting_search,
+            kw = dict(model="m", db_url=p, search_query_fn=counting_search,
                       analyze_fn=fake_analyze, cache_ttl_seconds=3600)
             first = pipeline.run_search("rally", "Politics", "", **kw)
             second = pipeline.run_search("rally", "Politics", "", **kw)
             self.assertFalse(first["search_cache_hit"])
             self.assertTrue(second["search_cache_hit"])
-            self.assertEqual(len(calls), 1)  # search ran once
+            self.assertEqual(len(calls), 3)  # 3 query variants, ran once
             self.assertEqual(len(second["results"]), 1)
 
     def test_analysis_cached_between_runs(self):
@@ -279,7 +279,7 @@ class TestPipeline(unittest.TestCase):
 
         search_calls, analyze_calls = [], []
 
-        def static_search(spec):
+        def static_search(query, spec):
             search_calls.append(spec.search_model)
             return [{"url": "https://x.com/a", "outlet": "x.com", "title": "A",
                      "snippet": "steady body", "content": "steady body", "published": ""}]
@@ -290,7 +290,7 @@ class TestPipeline(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.db")
-            base = dict(model="m", db_url=p, search_fn=static_search,
+            base = dict(model="m", db_url=p, search_query_fn=static_search,
                         analyze_fn=counting_analyze, cache_ttl_seconds=3600)
             # Different search models -> search cache misses, but the same article
             # under the same rating model -> analysis cache hits.
@@ -298,7 +298,7 @@ class TestPipeline(unittest.TestCase):
             out2 = pipeline.run_search("rally", "Politics", "", search_model="s2", **base)
             self.assertFalse(any(r.get("cached") for r in out1["results"]))
             self.assertFalse(out2["search_cache_hit"])
-            self.assertEqual(len(search_calls), 2)
+            self.assertEqual(len(search_calls), 6)  # 2 runs x 3 query variants
             self.assertEqual(len(analyze_calls), 1)
             self.assertTrue(all(r.get("cached") for r in out2["results"]))
 
@@ -307,7 +307,7 @@ class TestPipeline(unittest.TestCase):
 
         seen = []
 
-        def capturing_search(spec):
+        def capturing_search(query, spec):
             seen.append(spec)
             return []
 
@@ -317,10 +317,10 @@ class TestPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.db")
             pipeline.run_search("t", "Tech", "IN", model="m", search_model="s",
-                                db_url=p, search_fn=capturing_search,
+                                db_url=p, search_query_fn=capturing_search,
                                 analyze_fn=fake_analyze,
                                 allowed_domains=[" BBC.com "])
-        self.assertEqual(len(seen), 1)
+        self.assertEqual(len(seen), 3)  # one call per query variant
         spec = seen[0]
         self.assertEqual((spec.topic, spec.category, spec.country), ("t", "Tech", "IN"))
         self.assertEqual(spec.search_model, "s")
@@ -329,7 +329,7 @@ class TestPipeline(unittest.TestCase):
     def test_failing_article_falls_back_without_aborting_run(self):
         from spectrum_news import pipeline
 
-        def ok_search(spec):
+        def ok_search(query, spec):
             return [
                 {"url": "https://x.com/a", "outlet": "x.com", "title": "A",
                  "snippet": "s", "content": "s", "published": ""},
@@ -345,7 +345,7 @@ class TestPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.db")
             out = pipeline.run_search("t", "Tech", "", model="m", db_url=p,
-                                      search_fn=ok_search, analyze_fn=flaky_analyze)
+                                      search_query_fn=ok_search, analyze_fn=flaky_analyze)
             self.assertEqual(len(out["results"]), 2)
             by_url = {r["article"]["url"]: r for r in out["results"]}
             self.assertIn("heuristic fallback", by_url["https://x.com/a"]["analysis"]["verdict"])
@@ -357,18 +357,18 @@ class TestPipeline(unittest.TestCase):
 
         calls = []
 
-        def counting_search(spec):
+        def counting_search(query, spec):
             calls.append(1)
             return []
 
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.db")
-            kw = dict(model="m", db_url=p, search_fn=counting_search,
+            kw = dict(model="m", db_url=p, search_query_fn=counting_search,
                       analyze_fn=lambda a, m, k="", temperature=0.2: analyzer.heuristic_analysis(a))
             pipeline.run_search("t", "Tech", "", use_cache=True, **kw)
             out = pipeline.run_search("t", "Tech", "", use_cache=False, **kw)
             self.assertFalse(out["search_cache_hit"])
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls), 6)  # 2 runs x 3 query variants
 
 
 class TestStore(unittest.TestCase):
@@ -419,6 +419,42 @@ class TestStore(unittest.TestCase):
             rows = db.fetch_run_evidence(dst, rid)
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["bias_label"], "Center")
+
+
+class TestGraph(unittest.TestCase):
+    def test_checkpoint_recorded_for_resume(self):
+        from spectrum_news import graph as graph_mod
+
+        def fake_query(query, spec):
+            return [{"url": "https://x.com/a", "outlet": "x.com", "title": "A",
+                     "snippet": "s", "content": "s", "published": ""}]
+
+        def fake_analyze(article, model, key="", temperature=0.2):
+            return analyzer.heuristic_analysis(article)
+
+        with tempfile.TemporaryDirectory() as d:
+            db_url = os.path.join(d, "t.db")
+            tid = "resume-probe"
+            with graph_mod.checkpointer(os.path.join(d, "ckpt.db")) as saver:
+                compiled = graph_mod.build_graph(search_query_fn=fake_query,
+                                                 analyze_fn=fake_analyze).compile(checkpointer=saver)
+                final = compiled.invoke({
+                    "topic": "t", "category": "Tech", "country": "",
+                    "model": "m", "search_model": "m", "max_articles": 3,
+                    "temperature": 0.2, "db_url": db_url, "api_key": "",
+                    "base_url": "https://x", "allowed_domains": [],
+                    "cache_ttl": 3600, "use_cache": True,
+                }, config={"configurable": {"thread_id": tid}})
+                self.assertEqual(final["run_id"], 1)
+                # A later session can pick up the recorded checkpoint by thread id.
+                self.assertIsNotNone(
+                    saver.get({"configurable": {"thread_id": tid}}))
+
+    def test_pg_conninfo_conversion(self):
+        from spectrum_news import graph as graph_mod
+        self.assertEqual(graph_mod.pg_conninfo_for("postgresql+psycopg://u:p@h/db"),
+                         "postgresql://u:p@h/db")
+        self.assertTrue(graph_mod.pg_conninfo_for("data/x.db").startswith("sqlite:///"))
 
 
 class TestAppSmoke(unittest.TestCase):
