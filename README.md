@@ -2,7 +2,7 @@
 
 AI + open-source powered fact-checking and bias highlighting — Ground News-style spectrum, AI does the checking.
 
-User picks **Topic + Category** (+ optional **Country**) → parallel web search → **MBFC ratings + popularity** per outlet → **configurable OpenRouter rating model** scores factuality/bias + summary → **left→right spectrum view**, persisted in SQLite.
+User picks **Topic + Category** (+ optional **Country**) → parallel web search → **MBFC ratings + popularity** per outlet → **configurable OpenRouter rating model** scores factuality/bias + summary → **left→right spectrum view**, persisted in SQLite (dev) or Postgres (prod).
 
 ## Quickstart (uv)
 
@@ -37,6 +37,10 @@ Kill-the-box drill: `docker compose -f docker-compose.prod.yml down -v`, `up -d 
 `docker compose -f docker-compose.prod.yml exec -T db pg_restore -U spectrum -d spectrum -c < pgbackups/spectrum-<latest>.dump`
 (copy the dump out first: `docker compose -f docker-compose.prod.yml cp backup:/backups/<file> ./`).
 
+## Deploy to Google Cloud
+
+Phase-by-phase runbook (Cloud Run + self-hosted Postgres on GCE, no Cloud SQL): [`docs/deploy/google-cloud.md`](docs/deploy/google-cloud.md).
+
 ## Tests
 
 ```powershell
@@ -46,7 +50,7 @@ uv run python -m unittest discover -s tests -v
 ## Layout
 
 - `app.py` — Streamlit UI (preset chips, rating/search-model config, outlet allowlist, warm button, spectrum view, history)
-- `src/spectrum_news/` — `config`, `db` (SQLite), `search` (OpenRouter web_search→DDG, parallel), `cache` (namespaced TTL cache: search + analyses), `sources` (MBFC CSV + Tranco/curated popularity), `analyzer` (OpenRouter strict-JSON + heuristic fallback), `pipeline` (orchestrator)
+- `src/spectrum_news/` — `config`, `db` (SQLAlchemy: SQLite dev / Postgres prod), `search` (OpenRouter web_search→DDG, parallel), `cache` (namespaced TTL cache: search + analyses), `sources` (MBFC CSV + Tranco/curated popularity), `analyzer` (OpenRouter strict-JSON + heuristic fallback), `pipeline` (orchestrator)
 - `data/mbfc_ratings.csv` — curated outlet ratings (extend via PR)
 - `.scratch/spectrum-news/` — spec + tracer tickets (local issue tracker)
 - `docs/adr/` — stack, search, source-profile decisions
