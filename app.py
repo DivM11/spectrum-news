@@ -111,18 +111,24 @@ labels = {f"#{r['id']} · {r['topic']} [{r['category']}] ({r['model']})": r["id"
 sel = st.selectbox("History (reload past evidence set)", ["— new run —", *labels.keys()])
 
 # ---- Lazy cache warming (explicit click only) ----
+def _run_search(topic: str, category: str, country: str) -> dict:
+    """Single call path for interactive + warm runs (same models, domains, TTL)."""
+    return pipeline.run_search(
+        topic, category, country, model=MODEL,
+        search_model=(SEARCH_MODEL.strip() or MODEL),
+        max_articles=MAX_ARTICLES, temperature=TEMPERATURE,
+        db_url=config.DATABASE_URL,
+        openrouter_key=os.environ.get("OPENROUTER_API_KEY", ""),
+        allowed_domains=ALLOWED_DOMAINS,
+        cache_ttl_seconds=config.CACHE_TTL_SECONDS,
+    )
+
+
 if warm_btn:
     defaults = list(config.DEFAULT_PROMPTS.items())
     progress = st.progress(0, text="Warming USA cache...")
     for i, (cat, prompt) in enumerate(defaults):
-        pipeline.run_search(
-            prompt, cat, config.DEFAULT_COUNTRY, model=MODEL,
-            search_model=(SEARCH_MODEL.strip() or MODEL),
-            max_articles=MAX_ARTICLES, temperature=TEMPERATURE,
-            db_url=config.DATABASE_URL,
-            openrouter_key=os.environ.get("OPENROUTER_API_KEY", ""),
-            cache_ttl_seconds=config.CACHE_TTL_SECONDS,
-        )
+        _run_search(prompt, cat, config.DEFAULT_COUNTRY)
         progress.progress((i + 1) / len(defaults), text=f"Warmed {cat} ({i + 1}/{len(defaults)})")
     progress.empty()
     st.success("USA cache warmed — default topics now load instantly.")
@@ -144,20 +150,12 @@ if sel != "— new run —":
     render = _results
 elif run_btn:
     with st.spinner("Searching outlets in parallel → profiling → analyzing…"):
-        out = pipeline.run_search(
-            topic.strip(), category, COUNTRY, model=MODEL,
-            search_model=(SEARCH_MODEL.strip() or MODEL),
-            max_articles=MAX_ARTICLES, temperature=TEMPERATURE,
-            db_url=config.DATABASE_URL,
-            openrouter_key=os.environ.get("OPENROUTER_API_KEY", ""),
-            allowed_domains=ALLOWED_DOMAINS,
-            cache_ttl_seconds=config.CACHE_TTL_SECONDS,
-        )
+        out = _run_search(topic.strip(), category, COUNTRY)
     st.success(f"Run #{out['run_id']}: {len(out['results'])} articles · search `{out['search_model']}` · rating `{MODEL}`")
     n_cached = sum(1 for r in out["results"] if r.get("cached"))
     if out.get("search_cache_hit"):
-        st.caption("Search served from cache — same query, model, and article limit as a recent run.")
-    if n_cached and not out.get("search_cache_hit"):
+        st.caption("Search served from cache — same query, model, outlets, and article limit as a recent run.")
+    if n_cached:
         st.caption(f"{n_cached}/{len(out['results'])} analyses served from cache.")
     render = out["results"]
 else:
