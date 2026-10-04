@@ -76,13 +76,16 @@ def dispose_all() -> None:
     _INITIALIZED.clear()
 
 
-def create_run(db_url: str, topic: str, category: str, country: str, model: str) -> int:
+def create_run(db_url: str, topic: str, category: str, country: str, model: str,
+               allowed_domains: list | None = None) -> int:
+    import json
     engine = engine_for(db_url)
     with engine.begin() as conn:
         result = conn.execute(
             schema.search_runs.insert().values(
                 topic=topic, category=category, country=country,
-                model=model, created_at=time.time(),
+                model=model, allowed_domains=json.dumps(allowed_domains or []),
+                created_at=time.time(),
             )
         )
         return int(result.inserted_primary_key[0])

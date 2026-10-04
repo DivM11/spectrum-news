@@ -146,7 +146,8 @@ def build_graph(search_query_fn=None, analyze_fn=None):
         db_url = state["db_url"]
         db_mod.init_db(db_url)
         run_id = db_mod.create_run(db_url, state["topic"], state["category"],
-                                   state.get("country", ""), state["model"])
+                                   state.get("country", ""), state["model"],
+                                   allowed_domains=state.get("allowed_domains") or [])
         for r in state.get("results", []):
             aid = db_mod.insert_article(db_url, run_id, r["article"])
             db_mod.insert_analysis(db_url, aid, r["analysis"], r["profile"])

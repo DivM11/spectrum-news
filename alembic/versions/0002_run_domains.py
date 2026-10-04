@@ -1,0 +1,24 @@
+"""Add search_runs.allowed_domains (trajectory evals need it post-hoc).
+
+Revision ID: 0002
+Revises: 0001
+"""
+from __future__ import annotations
+
+from alembic import op
+import sqlalchemy as sa
+
+revision = "0002"
+down_revision = "0001"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.add_column("search_runs",
+                  sa.Column("allowed_domains", sa.Text(), nullable=False,
+                            server_default="[]"))
+
+
+def downgrade() -> None:
+    op.drop_column("search_runs", "allowed_domains")

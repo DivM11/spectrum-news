@@ -477,6 +477,72 @@ class TestTracing(unittest.TestCase):
             tracing.score("t", "s", 1.0)  # must not raise
 
 
+class TestEvals(unittest.TestCase):
+    def _evidence(self, **over):
+        base = {"article": {"url": "https://bbc.com/a", "outlet": "bbc.com",
+                            "title": "T", "snippet": "S"},
+                "analysis": {"factuality_score": 80, "bias_label": "Center",
+                             "bias_score": 0, "summary": "s", "key_claims": ["c"],
+                             "loaded_phrases": [], "verdict": "v"}}
+        base["analysis"].update(over)
+        return [base]
+
+    def test_trajectory_perfect_run(self):
+        from spectrum_news import evals
+        out = evals.trajectory_score({"allowed_domains": '["bbc.com"]'},
+                                     self._evidence())
+        self.assertEqual(out["score"], 100.0)
+
+    def test_trajectory_empty_evidence(self):
+        from spectrum_news import evals
+        self.assertEqual(evals.trajectory_score({}, [])["score"], 0.0)
+
+    def test_trajectory_catches_domain_violation_and_bad_ranges(self):
+        from spectrum_news import evals
+        out = evals.trajectory_score({"allowed_domains": '["bbc.com"]'},
+                                     self._evidence(factuality_score=140))
+        self.assertFalse(out["checks"]["scores_in_range"])
+        self.assertLess(out["score"], 100.0)
+        bad = self._evidence()
+        bad[0]["article"]["url"] = "https://random-blog.example/x"
+        out = evals.trajectory_score({"allowed_domains": '["bbc.com"]'}, bad)
+        self.assertFalse(out["checks"]["domains_honored"])
+
+    def test_judge_final_parses_scores(self):
+        from spectrum_news import evals
+        payload = '{"factuality_plausibility": 90, "bias_plausibility": 70, "rationale": "ok"}'
+        m = mock.Mock()
+        m.json.return_value = {"choices": [{"message": {"content": payload}}]}
+        m.raise_for_status.return_value = None
+        with mock.patch("requests.post", return_value=m):
+            out = evals.judge_final({"title": "T"}, {"summary": "s"},
+                                    model="j", api_key="k", base_url="https://x")
+        self.assertEqual(out["factuality_plausibility"], 90)
+        self.assertEqual(out["bias_plausibility"], 70)
+
+    def test_judge_cli_no_llm_reports_and_passes(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.db")
+            db.init_db(p)
+            rid = db.create_run(p, "T", "Tech", "", "m")
+            aid = db.insert_article(p, rid, {"url": "https://x.com/a", "outlet": "x.com",
+                                             "title": "T", "snippet": "S", "content": "S",
+                                             "published": ""})
+            db.insert_analysis(p, aid, {"factuality_score": 80, "bias_label": "Center",
+                                        "bias_score": 0, "summary": "s", "key_claims": ["c"],
+                                        "loaded_phrases": [], "verdict": "v"},
+                               {"mbfc_factuality": "High", "mbfc_bias": "Center",
+                                "popularity_rank": 5})
+            script = os.path.normpath(os.path.join(os.path.dirname(__file__), "..",
+                                                   "scripts", "judge_eval.py"))
+            proc = subprocess.run(["uv", "run", "python", script, "--db", p,
+                                   "--no-llm", "--min-score", "50"],
+                                  capture_output=True, text=True, timeout=120)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn('"avg_trajectory": 100.0', proc.stdout)
+
+
 class TestAppSmoke(unittest.TestCase):
     """Headless Streamlit regression tests (AppTest). Catches script-level
     crashes such as duplicate widget IDs without launching a browser."""

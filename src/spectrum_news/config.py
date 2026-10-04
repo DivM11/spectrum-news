@@ -71,9 +71,6 @@ def get(key: str, default: str = "") -> str:
     return os.environ.get(key, default)
 
 
-OPENROUTER_API_KEY = get("OPENROUTER_API_KEY", "")
-RATING_MODEL = get("RATING_MODEL", "google/gemini-2.5-flash-lite")
-SEARCH_MODEL = get("SEARCH_MODEL", "deepseek/deepseek-v4-flash")
 def _int_env(key: str, default: int) -> int:
     try:
         return int(os.environ.get(key, "") or default)
@@ -81,6 +78,11 @@ def _int_env(key: str, default: int) -> int:
         return default
 
 
+OPENROUTER_API_KEY = get("OPENROUTER_API_KEY", "")
+RATING_MODEL = get("RATING_MODEL", "google/gemini-2.5-flash-lite")
+SEARCH_MODEL = get("SEARCH_MODEL", "deepseek/deepseek-v4-flash")
+JUDGE_MODEL = get("JUDGE_MODEL", "google/gemini-2.5-flash")
+MAX_CONCURRENT_UNCACHED_RUNS = _int_env("MAX_CONCURRENT_UNCACHED_RUNS", 4)
 CACHE_TTL_SECONDS = _int_env("CACHE_TTL_SECONDS", 3600)
 DB_PATH = get("DB_PATH", "data/spectrum.db")
 # Full SQLAlchemy URL wins when set (prod Postgres); otherwise the SQLite file.

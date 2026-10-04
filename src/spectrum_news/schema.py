@@ -16,6 +16,7 @@ search_runs = Table(
     Column("category", Text, nullable=False, default=""),
     Column("country", Text, nullable=False, default=""),
     Column("model", Text, nullable=False, default=""),
+    Column("allowed_domains", Text, nullable=False, default="[]"),
     Column("created_at", Float, nullable=False),
 )
 
