@@ -12,7 +12,7 @@ from . import sources as sources_mod
 
 def run_search(topic: str, category: str, country: str = "", model: str = "google/gemini-2.5-flash-lite",
                search_model: str | None = None,
-               max_articles: int = 9, temperature: float = 0.2, db_path: str = "data/spectrum.db",
+               max_articles: int = 9, temperature: float = 0.2, db_url: str = "data/spectrum.db",
                openrouter_key: str = "", base_url: str = "https://openrouter.ai/api/v1",
                allowed_domains: list[str] | None = None,
                cache_ttl_seconds: int = 3600, use_cache: bool = True,
@@ -29,23 +29,23 @@ def run_search(topic: str, category: str, country: str = "", model: str = "googl
     domains = search_mod.normalize_domains(allowed_domains)
 
     skey = cache_mod.search_key(topic, category, country or "", search_model, max_articles, domains)
-    articles = cache_mod.get(db_path, skey, cache_ttl_seconds) if use_cache else None
+    articles = cache_mod.get(db_url, skey, cache_ttl_seconds) if use_cache else None
     search_cache_hit = articles is not None
     if articles is None:
         articles = search_fn(topic, category, country, max_articles=max_articles,
                              api_key=openrouter_key, search_model=search_model,
                              base_url=base_url, allowed_domains=domains)
         if use_cache:
-            cache_mod.put(db_path, skey, articles or [])
+            cache_mod.put(db_url, skey, articles or [])
     articles = (articles or [])[:max_articles]
 
-    db_mod.init_db(db_path)
-    run_id = db_mod.create_run(db_path, topic, category, country or "", model)
+    db_mod.init_db(db_url)
+    run_id = db_mod.create_run(db_url, topic, category, country or "", model)
 
     def _analyze(article: dict) -> dict:
         profile = sources_mod.source_profile(article.get("url", ""))
         akey = cache_mod.analysis_key(article, model, temperature)
-        analysis = cache_mod.get(db_path, akey, cache_ttl_seconds) if use_cache else None
+        analysis = cache_mod.get(db_url, akey, cache_ttl_seconds) if use_cache else None
         cached = analysis is not None
         if analysis is None:
             try:
@@ -55,15 +55,15 @@ def run_search(topic: str, category: str, country: str = "", model: str = "googl
                 analysis = analyzer_mod.heuristic_analysis(article)
                 analysis["verdict"] += " (LLM analysis failed; heuristic fallback)"
             if use_cache:
-                cache_mod.put(db_path, akey, analysis)
+                cache_mod.put(db_url, akey, analysis)
         return {"article": article, "profile": profile, "analysis": analysis, "cached": cached}
 
     with ThreadPoolExecutor(max_workers=min(6, max(1, len(articles)))) as pool:
         results = list(pool.map(_analyze, articles)) if articles else []
 
     for r in results:
-        aid = db_mod.insert_article(db_path, run_id, r["article"])
-        db_mod.insert_analysis(db_path, aid, r["analysis"], r["profile"])
+        aid = db_mod.insert_article(db_url, run_id, r["article"])
+        db_mod.insert_analysis(db_url, aid, r["analysis"], r["profile"])
 
     results.sort(key=lambda r: float(r["analysis"].get("bias_score", 0)))
     return {"run_id": run_id, "topic": topic, "category": category,

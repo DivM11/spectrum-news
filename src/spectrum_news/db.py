@@ -1,156 +1,162 @@
-"""SQLite persistence: search_runs, articles, analyses. WAL mode, stdlib only."""
+"""Persistence over SQLAlchemy (SQLite file or Postgres URL).
+
+`db_url` in every function accepts either a filesystem path (SQLite) or a
+full SQLAlchemy URL (e.g. ``postgresql+psycopg://…``). One code path, two
+dialects — no backend branches at call sites.
+"""
 from __future__ import annotations
 
 import os
-import sqlite3
 import time
 
+from sqlalchemy import create_engine, desc, event, select, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.pool import NullPool
 
-SCHEMA = """
-PRAGMA journal_mode=WAL;
-CREATE TABLE IF NOT EXISTS search_runs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  topic TEXT NOT NULL,
-  category TEXT NOT NULL,
-  country TEXT NOT NULL DEFAULT '',
-  model TEXT NOT NULL DEFAULT '',
-  created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS articles (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  run_id INTEGER NOT NULL REFERENCES search_runs(id) ON DELETE CASCADE,
-  url TEXT NOT NULL,
-  outlet TEXT NOT NULL DEFAULT '',
-  title TEXT NOT NULL DEFAULT '',
-  snippet TEXT NOT NULL DEFAULT '',
-  content TEXT NOT NULL DEFAULT '',
-  published TEXT NOT NULL DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS analyses (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
-  factuality_score REAL NOT NULL DEFAULT 50,
-  bias_label TEXT NOT NULL DEFAULT 'Center',
-  bias_score REAL NOT NULL DEFAULT 0,
-  summary TEXT NOT NULL DEFAULT '',
-  key_claims TEXT NOT NULL DEFAULT '',
-  loaded_phrases TEXT NOT NULL DEFAULT '',
-  verdict TEXT NOT NULL DEFAULT '',
-  mbfc_factuality TEXT NOT NULL DEFAULT 'Unknown',
-  mbfc_bias TEXT NOT NULL DEFAULT 'Unknown',
-  popularity_rank INTEGER NOT NULL DEFAULT 999999
-);
-"""
+from . import schema
 
 
-def connect(db_path: str) -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(os.path.abspath(db_path)) or ".", exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
+_ENGINES: dict[str, Engine] = {}
+_INITIALIZED: set[str] = set()
 
 
-def init_db(db_path: str) -> None:
-    conn = connect(db_path)
-    try:
-        conn.executescript(SCHEMA)
-        conn.commit()
-    finally:
-        conn.close()
+def resolve_url(db_path_or_url: str) -> str:
+    """Filesystem path -> ``sqlite:///`` URL; full URL passes through."""
+    s = (db_path_or_url or "").strip()
+    if "://" in s:
+        return s
+    path = os.path.abspath(s or "data/spectrum.db")
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    return f"sqlite:///{path}"
 
 
-def create_run(db_path: str, topic: str, category: str, country: str, model: str) -> int:
-    conn = connect(db_path)
-    try:
-        cur = conn.execute(
-            "INSERT INTO search_runs (topic, category, country, model, created_at) VALUES (?,?,?,?,?)",
-            (topic, category, country, model, time.time()),
+def engine_for(db_path_or_url: str) -> Engine:
+    url = resolve_url(db_path_or_url)
+    engine = _ENGINES.get(url)
+    if engine is None:
+        kwargs: dict = {}
+        if url.startswith("sqlite:"):
+            # Short transactions + threads: open/close per use, never hold locks.
+            kwargs["connect_args"] = {"check_same_thread": False}
+            kwargs["poolclass"] = NullPool
+        engine = create_engine(url, pool_pre_ping=True, **kwargs)
+        if url.startswith("sqlite:"):
+            @event.listens_for(engine, "connect")
+            def _sqlite_pragmas(dbapi_conn, _):
+                cur = dbapi_conn.cursor()
+                cur.execute("PRAGMA journal_mode=WAL;")
+                cur.execute("PRAGMA foreign_keys=ON;")
+                cur.close()
+        _ENGINES[url] = engine
+    return engine
+
+
+def init_db(db_path_or_url: str) -> None:
+    engine = engine_for(db_path_or_url)
+    url = str(engine.url)
+    if url in _INITIALIZED:
+        return
+    schema.metadata.create_all(engine)
+    # One-time cleanup of the pre-SQLAlchemy single-purpose table.
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS search_cache"))
+    _INITIALIZED.add(url)
+
+
+def dispose_all() -> None:
+    """Close pooled connections and forget engines (tests, shutdown)."""
+    for engine in _ENGINES.values():
+        try:
+            engine.dispose()
+        except Exception:
+            pass
+    _ENGINES.clear()
+    _INITIALIZED.clear()
+
+
+def create_run(db_url: str, topic: str, category: str, country: str, model: str) -> int:
+    engine = engine_for(db_url)
+    with engine.begin() as conn:
+        result = conn.execute(
+            schema.search_runs.insert().values(
+                topic=topic, category=category, country=country,
+                model=model, created_at=time.time(),
+            )
         )
-        conn.commit()
-        return int(cur.lastrowid)
-    finally:
-        conn.close()
+        return int(result.inserted_primary_key[0])
 
 
-def insert_article(db_path: str, run_id: int, article: dict) -> int:
-    conn = connect(db_path)
-    try:
-        cur = conn.execute(
-            "INSERT INTO articles (run_id, url, outlet, title, snippet, content, published) VALUES (?,?,?,?,?,?,?)",
-            (
-                run_id,
-                article.get("url", ""),
-                article.get("outlet", ""),
-                article.get("title", ""),
-                article.get("snippet", ""),
-                article.get("content", article.get("snippet", "")),
-                article.get("published", ""),
-            ),
+def insert_article(db_url: str, run_id: int, article: dict) -> int:
+    engine = engine_for(db_url)
+    with engine.begin() as conn:
+        result = conn.execute(
+            schema.articles.insert().values(
+                run_id=run_id,
+                url=article.get("url", ""),
+                outlet=article.get("outlet", ""),
+                title=article.get("title", ""),
+                snippet=article.get("snippet", ""),
+                content=article.get("content", article.get("snippet", "")),
+                published=article.get("published", ""),
+            )
         )
-        conn.commit()
-        return int(cur.lastrowid)
-    finally:
-        conn.close()
+        return int(result.inserted_primary_key[0])
 
 
-def insert_analysis(db_path: str, article_id: int, analysis: dict, profile: dict) -> int:
+def insert_analysis(db_url: str, article_id: int, analysis: dict, profile: dict) -> int:
     import json
 
     def _dump(v):
         return v if isinstance(v, str) else json.dumps(v or [])
 
-    conn = connect(db_path)
-    try:
-        cur = conn.execute(
-            """INSERT INTO analyses
-            (article_id, factuality_score, bias_label, bias_score, summary,
-             key_claims, loaded_phrases, verdict,
-             mbfc_factuality, mbfc_bias, popularity_rank)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                article_id,
-                float(analysis.get("factuality_score", 50)),
-                analysis.get("bias_label", "Center"),
-                float(analysis.get("bias_score", 0)),
-                analysis.get("summary", ""),
-                _dump(analysis.get("key_claims", [])),
-                _dump(analysis.get("loaded_phrases", [])),
-                analysis.get("verdict", ""),
-                profile.get("mbfc_factuality", "Unknown"),
-                profile.get("mbfc_bias", "Unknown"),
-                int(profile.get("popularity_rank", 999999)),
-            ),
+    engine = engine_for(db_url)
+    with engine.begin() as conn:
+        result = conn.execute(
+            schema.analyses.insert().values(
+                article_id=article_id,
+                factuality_score=float(analysis.get("factuality_score", 50)),
+                bias_label=analysis.get("bias_label", "Center"),
+                bias_score=float(analysis.get("bias_score", 0)),
+                summary=analysis.get("summary", ""),
+                key_claims=_dump(analysis.get("key_claims", [])),
+                loaded_phrases=_dump(analysis.get("loaded_phrases", [])),
+                verdict=analysis.get("verdict", ""),
+                mbfc_factuality=profile.get("mbfc_factuality", "Unknown"),
+                mbfc_bias=profile.get("mbfc_bias", "Unknown"),
+                popularity_rank=int(profile.get("popularity_rank", 999999)),
+            )
         )
-        conn.commit()
-        return int(cur.lastrowid)
-    finally:
-        conn.close()
+        return int(result.inserted_primary_key[0])
 
 
-def list_runs(db_path: str, limit: int = 20) -> list[dict]:
-    conn = connect(db_path)
-    try:
+def list_runs(db_url: str, limit: int = 20) -> list[dict]:
+    engine = engine_for(db_url)
+    with engine.connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM search_runs ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
+            select(schema.search_runs)
+            .order_by(desc(schema.search_runs.c.id))
+            .limit(limit)
+        ).mappings().all()
         return [dict(r) for r in rows]
-    finally:
-        conn.close()
 
 
-def fetch_run_evidence(db_path: str, run_id: int) -> list[dict]:
+def fetch_run_evidence(db_url: str, run_id: int) -> list[dict]:
     """Joined article + analysis rows for one run, ordered by bias_score."""
-    conn = connect(db_path)
-    try:
+    engine = engine_for(db_url)
+    a = schema.articles
+    an = schema.analyses
+    with engine.connect() as conn:
         rows = conn.execute(
-            """SELECT a.url, a.outlet, a.title, a.snippet, a.published,
-                      an.factuality_score, an.bias_label, an.bias_score, an.summary,
-                      an.key_claims, an.loaded_phrases, an.verdict,
-                      an.mbfc_factuality, an.mbfc_bias, an.popularity_rank
-               FROM articles a JOIN analyses an ON an.article_id = a.id
-               WHERE a.run_id = ? ORDER BY an.bias_score ASC""",
-            (run_id,),
-        ).fetchall()
+            select(
+                a.c.url, a.c.outlet, a.c.title, a.c.snippet, a.c.published,
+                an.c.factuality_score, an.c.bias_label, an.c.bias_score,
+                an.c.summary, an.c.key_claims, an.c.loaded_phrases, an.c.verdict,
+                an.c.mbfc_factuality, an.c.mbfc_bias, an.c.popularity_rank,
+            )
+            .select_from(a.join(an, an.c.article_id == a.c.id))
+            .where(a.c.run_id == run_id)
+            .order_by(an.c.bias_score.asc())
+        ).mappings().all()
         return [dict(r) for r in rows]
-    finally:
-        conn.close()

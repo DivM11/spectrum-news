@@ -245,7 +245,7 @@ class TestPipeline(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.db")
-            out = pipeline.run_search("rally", "Politics", "", model="m", db_path=p,
+            out = pipeline.run_search("rally", "Politics", "", model="m", db_url=p,
                                       search_fn=fake_search, analyze_fn=fake_analyze)
             self.assertEqual(len(out["results"]), 2)
             scores = [r["analysis"]["bias_score"] for r in out["results"]]
@@ -267,7 +267,7 @@ class TestPipeline(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.db")
-            kw = dict(model="m", db_path=p, search_fn=counting_search,
+            kw = dict(model="m", db_url=p, search_fn=counting_search,
                       analyze_fn=fake_analyze, cache_ttl_seconds=3600)
             first = pipeline.run_search("rally", "Politics", "", **kw)
             second = pipeline.run_search("rally", "Politics", "", **kw)
@@ -293,7 +293,7 @@ class TestPipeline(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.db")
-            base = dict(model="m", db_path=p, search_fn=static_search,
+            base = dict(model="m", db_url=p, search_fn=static_search,
                         analyze_fn=counting_analyze, cache_ttl_seconds=3600)
             # Different search models -> search cache misses, but the same article
             # under the same rating model -> analysis cache hits.
@@ -324,7 +324,7 @@ class TestPipeline(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.db")
-            out = pipeline.run_search("t", "Tech", "", model="m", db_path=p,
+            out = pipeline.run_search("t", "Tech", "", model="m", db_url=p,
                                       search_fn=ok_search, analyze_fn=flaky_analyze)
             self.assertEqual(len(out["results"]), 2)
             by_url = {r["article"]["url"]: r for r in out["results"]}
@@ -344,7 +344,7 @@ class TestPipeline(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.db")
-            kw = dict(model="m", db_path=p, search_fn=counting_search,
+            kw = dict(model="m", db_url=p, search_fn=counting_search,
                       analyze_fn=lambda a, m, k="", temperature=0.2: analyzer.heuristic_analysis(a))
             pipeline.run_search("t", "Tech", "", use_cache=True, **kw)
             out = pipeline.run_search("t", "Tech", "", use_cache=False, **kw)

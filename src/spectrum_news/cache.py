@@ -1,48 +1,30 @@
-"""Namespaced SQLite cache with TTL (search results, article analyses).
+"""Namespaced cache with TTL (search results, article analyses).
 
-Single responsibility: keyed JSON storage with expiry. Key *derivation* for each
-domain lives in the helpers below, so call sites never hand-roll hashes (DRY).
-Cache access never raises — a broken cache must not break a run.
+Single responsibility: keyed JSON storage with expiry, over the shared
+SQLAlchemy store (SQLite file or Postgres URL — same as db.py).
+Key *derivation* for each domain lives in the helpers below, so call sites
+never hand-roll hashes (DRY). Cache access never raises — a broken cache
+must not break a run.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import sqlite3
 import time
 from typing import NamedTuple
 
+from sqlalchemy import delete, select
+
+from . import db as db_mod
+from . import schema
+
 SEARCH_NS = "search"
 ANALYSIS_NS = "analysis"
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS cache_entries (
-  namespace TEXT NOT NULL,
-  key TEXT NOT NULL,
-  response TEXT NOT NULL,
-  created_at REAL NOT NULL,
-  PRIMARY KEY (namespace, key)
-);
-DROP TABLE IF EXISTS search_cache;
-"""
 
 
 class CacheKey(NamedTuple):
     namespace: str
     key: str
-
-
-def ensure_table(db_path: str) -> None:
-    directory = os.path.dirname(os.path.abspath(db_path))
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.executescript(SCHEMA)
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _hash(payload: dict) -> str:
@@ -55,7 +37,8 @@ def _norm(s: str) -> str:
 
 
 def search_key(topic: str, category: str, country: str,
-               search_model: str, max_articles: int) -> CacheKey:
+               search_model: str, max_articles: int,
+               allowed_domains: list[str] | None = None) -> CacheKey:
     """Identity of one Search run's gathered articles (case/whitespace-insensitive)."""
     return CacheKey(SEARCH_NS, _hash({
         "topic": _norm(topic),
@@ -63,6 +46,7 @@ def search_key(topic: str, category: str, country: str,
         "country": _norm(country),
         "search_model": (search_model or "").strip(),
         "max_articles": int(max_articles),
+        "allowed_domains": sorted({_norm(d) for d in (allowed_domains or []) if _norm(d)}),
     }))
 
 
@@ -78,24 +62,19 @@ def analysis_key(article: dict, model: str, temperature: float) -> CacheKey:
     }))
 
 
-def _connect(db_path: str) -> sqlite3.Connection:
-    ensure_table(db_path)
-    return sqlite3.connect(db_path)
-
-
-def get(db_path: str, cache_key: CacheKey, ttl_seconds: int):
+def get(db_url: str, cache_key: CacheKey, ttl_seconds: int):
     """Fresh cached value, or None on miss/expiry/error."""
     if ttl_seconds <= 0:
         return None
     try:
-        conn = _connect(db_path)
-        try:
+        engine = db_mod.engine_for(db_url)
+        db_mod.init_db(db_url)
+        with engine.connect() as conn:
             row = conn.execute(
-                "SELECT response, created_at FROM cache_entries WHERE namespace = ? AND key = ?",
-                (cache_key.namespace, cache_key.key),
-            ).fetchone()
-        finally:
-            conn.close()
+                select(schema.cache_entries.c.response, schema.cache_entries.c.created_at)
+                .where(schema.cache_entries.c.namespace == cache_key.namespace,
+                       schema.cache_entries.c.key == cache_key.key)
+            ).first()
         if not row:
             return None
         if time.time() - row[1] > ttl_seconds:
@@ -105,35 +84,39 @@ def get(db_path: str, cache_key: CacheKey, ttl_seconds: int):
         return None
 
 
-def put(db_path: str, cache_key: CacheKey, value) -> None:
+def put(db_url: str, cache_key: CacheKey, value) -> None:
     """Store a JSON-serializable value. Never raises."""
     try:
-        conn = _connect(db_path)
-        try:
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        engine = db_mod.engine_for(db_url)
+        db_mod.init_db(db_url)
+        insert = (pg_insert if engine.dialect.name == "postgresql" else sqlite_insert)
+        with engine.begin() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO cache_entries (namespace, key, response, created_at)"
-                " VALUES (?,?,?,?)",
-                (cache_key.namespace, cache_key.key, json.dumps(value), time.time()),
+                insert(schema.cache_entries)
+                .values(namespace=cache_key.namespace, key=cache_key.key,
+                        response=json.dumps(value), created_at=time.time())
+                .on_conflict_do_update(
+                    index_elements=["namespace", "key"],
+                    set_={"response": json.dumps(value), "created_at": time.time()},
+                )
             )
-            conn.commit()
-        finally:
-            conn.close()
     except Exception:
         pass
 
 
-def clear(db_path: str, namespace: str | None = None) -> int:
+def clear(db_url: str, namespace: str | None = None) -> int:
     """Delete entries (one namespace, or all when None). Returns rows removed."""
     try:
-        conn = _connect(db_path)
-        try:
-            if namespace is None:
-                cur = conn.execute("DELETE FROM cache_entries")
-            else:
-                cur = conn.execute("DELETE FROM cache_entries WHERE namespace = ?", (namespace,))
-            conn.commit()
-            return cur.rowcount or 0
-        finally:
-            conn.close()
+        engine = db_mod.engine_for(db_url)
+        db_mod.init_db(db_url)
+        with engine.begin() as conn:
+            stmt = delete(schema.cache_entries)
+            if namespace is not None:
+                stmt = stmt.where(schema.cache_entries.c.namespace == namespace)
+            result = conn.execute(stmt)
+            return result.rowcount or 0
     except Exception:
         return 0

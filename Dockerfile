@@ -2,7 +2,9 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md alembic.ini ./
+COPY alembic/ alembic/
+COPY ops/ ops/
 COPY src/ src/
 COPY app.py .env.example ./
 COPY data/ data/
