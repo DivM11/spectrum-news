@@ -24,6 +24,7 @@ from . import analyzer as analyzer_mod
 from . import cache as cache_mod
 from . import db as db_mod
 from . import search as search_mod
+from . import tracing as tracing_mod
 
 
 class RunState(TypedDict, total=False):
@@ -93,10 +94,12 @@ def build_graph(search_query_fn=None, analyze_fn=None):
     search_query_fn = search_query_fn or default_search_query
     analyze_fn = analyze_fn or analyzer_mod.analyze_article
 
+    @tracing_mod.observe("plan")
     def plan(state: RunState) -> dict:
         return {"queries": search_mod.build_queries(
             state["topic"], state["category"], state.get("country", ""))}
 
+    @tracing_mod.observe("check_search_cache")
     def check_search_cache(state: RunState) -> dict:
         if not state.get("use_cache", True):
             return {"articles": [], "search_cache_hit": False}
@@ -109,6 +112,7 @@ def build_graph(search_query_fn=None, analyze_fn=None):
     def _route_cache(state: RunState) -> str:
         return "hit" if state.get("articles") else "fetch"
 
+    @tracing_mod.observe("fetch")
     def fetch(state: RunState) -> dict:
         spec = _spec_from(state)
         with ThreadPoolExecutor(max_workers=min(6, max(1, len(state.get("queries", []))))) as pool:
@@ -122,11 +126,13 @@ def build_graph(search_query_fn=None, analyze_fn=None):
                 spec.max_articles, spec.domains()), articles)
         return {"articles": articles}
 
+    @tracing_mod.observe("profile")
     def profile(state: RunState) -> dict:
         return {"profiled": [
             {"article": a, "profile": sources_profile(a)}
             for a in state.get("articles", [])]}
 
+    @tracing_mod.observe("analyze")
     def analyze(state: RunState) -> dict:
         items = state.get("profiled", [])
         with ThreadPoolExecutor(max_workers=min(6, max(1, len(items)))) as pool:
@@ -135,6 +141,7 @@ def build_graph(search_query_fn=None, analyze_fn=None):
         results.sort(key=lambda r: float(r["analysis"].get("bias_score", 0)))
         return {"results": results}
 
+    @tracing_mod.observe("persist")
     def persist(state: RunState) -> dict:
         db_url = state["db_url"]
         db_mod.init_db(db_url)

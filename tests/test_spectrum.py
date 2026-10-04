@@ -457,6 +457,26 @@ class TestGraph(unittest.TestCase):
         self.assertTrue(graph_mod.pg_conninfo_for("data/x.db").startswith("sqlite:///"))
 
 
+class TestTracing(unittest.TestCase):
+    def test_disabled_without_keys(self):
+        from spectrum_news import tracing
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(tracing.enabled())
+
+    def test_observe_passthrough_when_disabled(self):
+        from spectrum_news import tracing
+        with mock.patch.object(tracing, "enabled", return_value=False):
+            @tracing.observe("probe")
+            def add(a, b=0):
+                return a + b
+            self.assertEqual(add(1, b=2), 3)
+
+    def test_score_never_raises(self):
+        from spectrum_news import tracing
+        with mock.patch.object(tracing, "enabled", return_value=False):
+            tracing.score("t", "s", 1.0)  # must not raise
+
+
 class TestAppSmoke(unittest.TestCase):
     """Headless Streamlit regression tests (AppTest). Catches script-level
     crashes such as duplicate widget IDs without launching a browser."""

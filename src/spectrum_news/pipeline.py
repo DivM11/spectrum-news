@@ -5,6 +5,7 @@ import uuid
 
 from . import graph as graph_mod
 from . import search as search_mod
+from . import tracing as tracing_mod
 
 
 def run_search(topic: str, category: str, country: str = "", model: str = "google/gemini-2.5-flash-lite",
@@ -24,15 +25,20 @@ def run_search(topic: str, category: str, country: str = "", model: str = "googl
     # Fresh thread per call: checkpoints record the run (crash-resumable via the
     # graph API), but a repeat call always re-executes instead of replaying.
     thread_id = f"run-{uuid.uuid4().hex[:12]}"
-    with graph_mod.checkpointer(db_url) as cp:
-        final = graph.compile(checkpointer=cp).invoke({
-        "topic": topic, "category": category, "country": country or "",
-        "model": model, "search_model": search_model,
-        "max_articles": max_articles, "temperature": temperature,
-        "db_url": db_url, "api_key": openrouter_key, "base_url": base_url,
-        "allowed_domains": search_mod.normalize_domains(allowed_domains),
-        "cache_ttl": cache_ttl_seconds, "use_cache": use_cache,
-    }, config={"configurable": {"thread_id": thread_id}})
+
+    @tracing_mod.observe("search-run")
+    def _invoke():
+        with graph_mod.checkpointer(db_url) as cp:
+            return graph.compile(checkpointer=cp).invoke({
+                "topic": topic, "category": category, "country": country or "",
+                "model": model, "search_model": search_model,
+                "max_articles": max_articles, "temperature": temperature,
+                "db_url": db_url, "api_key": openrouter_key, "base_url": base_url,
+                "allowed_domains": search_mod.normalize_domains(allowed_domains),
+                "cache_ttl": cache_ttl_seconds, "use_cache": use_cache,
+            }, config={"configurable": {"thread_id": thread_id}})
+
+    final = _invoke()
     return {"run_id": final.get("run_id"), "topic": topic, "category": category,
             "country": country, "model": model, "search_model": search_model,
             "allowed_domains": search_mod.normalize_domains(allowed_domains),
