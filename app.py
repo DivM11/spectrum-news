@@ -121,6 +121,7 @@ def _run_search(topic: str, category: str, country: str) -> dict:
         openrouter_key=os.environ.get("OPENROUTER_API_KEY", ""),
         allowed_domains=ALLOWED_DOMAINS,
         cache_ttl_seconds=config.CACHE_TTL_SECONDS,
+        max_concurrent_uncached_runs=config.MAX_CONCURRENT_UNCACHED_RUNS,
     )
 
 

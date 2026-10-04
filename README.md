@@ -50,7 +50,7 @@ uv run python -m unittest discover -s tests -v
 ## Layout
 
 - `app.py` — Streamlit UI (preset chips, rating/search-model config, outlet allowlist, warm button, spectrum view, history)
-- `src/spectrum_news/` — `config`, `db` (SQLAlchemy: SQLite dev / Postgres prod), `search` (OpenRouter web_search→DDG, parallel), `cache` (namespaced TTL cache: search + analyses), `sources` (MBFC CSV + Tranco/curated popularity), `analyzer` (OpenRouter strict-JSON + heuristic fallback), `pipeline` (orchestrator)
+- `src/spectrum_news/` — `config`, `db` (SQLAlchemy: SQLite dev / Postgres prod), `graph` (LangGraph run graph + checkpoints), `tracing` (optional Langfuse), `evals` (judge scoring), `search` (OpenRouter web_search→DDG, parallel), `cache` (namespaced TTL cache: search + analyses), `sources` (MBFC CSV + Tranco/curated popularity), `analyzer` (OpenRouter strict-JSON + heuristic fallback), `pipeline` (run entry over the graph)
 - `data/mbfc_ratings.csv` — curated outlet ratings (extend via PR)
 - `.scratch/spectrum-news/` — spec + tracer tickets (local issue tracker)
 - `docs/adr/` — stack, search, source-profile decisions

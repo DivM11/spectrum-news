@@ -1,5 +1,5 @@
 import json
-import os, sys, tempfile, unittest
+import os, sys, tempfile, time, unittest
 from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from spectrum_news import sources, search, analyzer, cache, config, db
@@ -351,6 +351,41 @@ class TestPipeline(unittest.TestCase):
             self.assertIn("heuristic fallback", by_url["https://x.com/a"]["analysis"]["verdict"])
             rows = db.fetch_run_evidence(p, out["run_id"])
             self.assertEqual(len(rows), 2)
+
+    def test_uncached_runs_bounded_by_semaphore(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        from spectrum_news import pipeline
+
+        lock = threading.Lock()
+        state = {"current": 0, "max": 0}
+
+        def slow_search(query, spec):
+            return [{"url": "https://x.com/a", "outlet": "x.com", "title": "A",
+                     "snippet": "s", "content": "s", "published": ""}]
+
+        def slow_analyze(article, model, key="", temperature=0.2):
+            with lock:
+                state["current"] += 1
+                state["max"] = max(state["max"], state["current"])
+            try:
+                time.sleep(0.15)
+            finally:
+                with lock:
+                    state["current"] -= 1
+            return analyzer.heuristic_analysis(article)
+
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.db")
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                results = list(pool.map(
+                    lambda i: pipeline.run_search(f"topic {i}", "Tech", "", model="m",
+                                                  db_url=p, search_query_fn=slow_search,
+                                                  analyze_fn=slow_analyze,
+                                                  max_concurrent_uncached_runs=2),
+                    range(6)))
+        self.assertTrue(all(r["results"] for r in results))
+        self.assertLessEqual(state["max"], 2)
 
     def test_cache_bypass_refetches(self):
         from spectrum_news import pipeline
