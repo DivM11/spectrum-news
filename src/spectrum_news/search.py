@@ -9,7 +9,26 @@ from __future__ import annotations
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
+
+
+@dataclass
+class SearchSpec:
+    """Everything one fan-out search needs. New search options extend this
+    type instead of rippling through every search_fn signature (fakes incl.)."""
+    topic: str
+    category: str
+    country: str = ""
+    max_articles: int = 12
+    results_per_query: int = 5
+    search_model: str = "deepseek/deepseek-v4-flash"
+    base_url: str = "https://openrouter.ai/api/v1"
+    api_key: str = ""
+    allowed_domains: list[str] | None = field(default=None)
+
+    def domains(self) -> list[str]:
+        return normalize_domains(self.allowed_domains)
 
 SEARCH_PROMPT = """You have live web search. Find {n} recent news articles about the QUERY below,
 covering DIFFERENT outlets and perspectives (left, center, right, international if relevant).
@@ -166,21 +185,16 @@ def _run_one(query: str, *, max_results: int, api_key: str,
         return []
 
 
-def fanout_search(topic: str, category: str, country: str = "",
-                  max_results_per_query: int = 5, api_key: str = "",
-                  search_model: str = "deepseek/deepseek-v4-flash",
-                  base_url: str = "https://openrouter.ai/api/v1",
-                  allowed_domains: list[str] | None = None,
-                  max_articles: int = 12) -> list[dict]:
-    queries = build_queries(topic, category, country)
+def fanout_search(spec: SearchSpec) -> list[dict]:
+    queries = build_queries(spec.topic, spec.category, spec.country)
     if not queries:
         return []
     with ThreadPoolExecutor(max_workers=min(6, len(queries))) as pool:
         batches = list(pool.map(
-            lambda q: _run_one(q, max_results=max_results_per_query, api_key=api_key,
-                               search_model=search_model, base_url=base_url,
-                               allowed_domains=allowed_domains),
+            lambda q: _run_one(q, max_results=spec.results_per_query, api_key=spec.api_key,
+                               search_model=spec.search_model, base_url=spec.base_url,
+                               allowed_domains=spec.domains()),
             queries,
         ))
     merged = [a for batch in batches for a in batch if a.get("url")]
-    return dedupe(merged)[:max_articles]
+    return dedupe(merged)[:spec.max_articles]

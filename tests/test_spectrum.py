@@ -231,8 +231,7 @@ class TestPipeline(unittest.TestCase):
     def test_end_to_end_with_fakes(self):
         from spectrum_news import pipeline
 
-        def fake_search(topic, category, country="", max_articles=9, api_key="",
-                        search_model="m", base_url="https://x", allowed_domains=None):
+        def fake_search(spec):
             return [
                 {"url": "https://reuters.com/a", "outlet": "reuters.com", "title": "A",
                  "snippet": "markets rally", "content": "markets rally", "published": ""},
@@ -256,9 +255,8 @@ class TestPipeline(unittest.TestCase):
 
         calls = []
 
-        def counting_search(topic, category, country="", max_articles=9, api_key="",
-                            search_model="m", base_url="https://x", allowed_domains=None):
-            calls.append((topic, category, country))
+        def counting_search(spec):
+            calls.append((spec.topic, spec.category, spec.country))
             return [{"url": "https://x.com/a", "outlet": "x.com", "title": "A",
                      "snippet": "s", "content": "s", "published": ""}]
 
@@ -281,9 +279,8 @@ class TestPipeline(unittest.TestCase):
 
         search_calls, analyze_calls = [], []
 
-        def static_search(topic, category, country="", max_articles=9, api_key="",
-                          search_model="m", base_url="https://x", allowed_domains=None):
-            search_calls.append(search_model)
+        def static_search(spec):
+            search_calls.append(spec.search_model)
             return [{"url": "https://x.com/a", "outlet": "x.com", "title": "A",
                      "snippet": "steady body", "content": "steady body", "published": ""}]
 
@@ -305,11 +302,34 @@ class TestPipeline(unittest.TestCase):
             self.assertEqual(len(analyze_calls), 1)
             self.assertTrue(all(r.get("cached") for r in out2["results"]))
 
+    def test_search_spec_flows_end_to_end(self):
+        from spectrum_news import pipeline
+
+        seen = []
+
+        def capturing_search(spec):
+            seen.append(spec)
+            return []
+
+        def fake_analyze(article, model, key="", temperature=0.2):
+            return analyzer.heuristic_analysis(article)
+
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.db")
+            pipeline.run_search("t", "Tech", "IN", model="m", search_model="s",
+                                db_url=p, search_fn=capturing_search,
+                                analyze_fn=fake_analyze,
+                                allowed_domains=[" BBC.com "])
+        self.assertEqual(len(seen), 1)
+        spec = seen[0]
+        self.assertEqual((spec.topic, spec.category, spec.country), ("t", "Tech", "IN"))
+        self.assertEqual(spec.search_model, "s")
+        self.assertEqual(spec.domains(), ["bbc.com"])
+
     def test_failing_article_falls_back_without_aborting_run(self):
         from spectrum_news import pipeline
 
-        def ok_search(topic, category, country="", max_articles=9, api_key="",
-                      search_model="m", base_url="https://x", allowed_domains=None):
+        def ok_search(spec):
             return [
                 {"url": "https://x.com/a", "outlet": "x.com", "title": "A",
                  "snippet": "s", "content": "s", "published": ""},
@@ -337,8 +357,7 @@ class TestPipeline(unittest.TestCase):
 
         calls = []
 
-        def counting_search(topic, category, country="", max_articles=9, api_key="",
-                            search_model="m", base_url="https://x", allowed_domains=None):
+        def counting_search(spec):
             calls.append(1)
             return []
 
@@ -400,10 +419,12 @@ class TestStore(unittest.TestCase):
             rows = db.fetch_run_evidence(dst, rid)
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["bias_label"], "Center")
+
+
+class TestAppSmoke(unittest.TestCase):
     """Headless Streamlit regression tests (AppTest). Catches script-level
     crashes such as duplicate widget IDs without launching a browser."""
 
-class TestAppSmoke(unittest.TestCase):
     def _run_app(self):
         from streamlit.testing.v1 import AppTest
         app_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "app.py"))
