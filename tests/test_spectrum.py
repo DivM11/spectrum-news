@@ -31,6 +31,11 @@ class TestSearch(unittest.TestCase):
         b = search.normalize("https://x.com/a/", "T2", "S2")
         self.assertEqual(len(search.dedupe([a, b])), 1)
 
+    def test_normalize_domains(self):
+        self.assertEqual(search.normalize_domains([" BBC.com ", "bbc.com", "", None]),
+                         ["bbc.com"])
+        self.assertEqual(search.normalize_domains(None), [])
+
 
 class TestOpenRouterSearch(unittest.TestCase):
     def _resp(self, content):

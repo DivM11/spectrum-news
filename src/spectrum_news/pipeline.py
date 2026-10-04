@@ -26,7 +26,7 @@ def run_search(topic: str, category: str, country: str = "", model: str = "googl
     search_fn = search_fn or search_mod.fanout_search
     analyze_fn = analyze_fn or analyzer_mod.analyze_article
     search_model = search_model or model
-    domains = sorted({(d or "").strip().lower() for d in (allowed_domains or []) if (d or "").strip()})
+    domains = search_mod.normalize_domains(allowed_domains)
 
     skey = cache_mod.search_key(topic, category, country or "", search_model, max_articles, domains)
     articles = cache_mod.get(db_path, skey, cache_ttl_seconds) if use_cache else None

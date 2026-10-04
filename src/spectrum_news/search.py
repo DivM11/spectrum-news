@@ -104,10 +104,20 @@ def parse_articles(s: str) -> list[dict]:
     return out
 
 
+def normalize_domains(domains: list[str] | None) -> list[str]:
+    """Lowercase/strip/dedupe/sort outlet domains. Single home for this shape."""
+    return sorted({(d or "").strip().lower() for d in (domains or []) if (d or "").strip()})
+
+
 def _openrouter_search(query: str, *, model: str, api_key: str,
-                       base_url: str, max_results: int, timeout: int = 90) -> list[dict]:
+                       base_url: str, max_results: int, timeout: int = 90,
+                       allowed_domains: list[str] | None = None) -> list[dict]:
     import requests
 
+    tool_params: dict = {"max_results": max_results, "max_total_results": max_results}
+    domains = normalize_domains(allowed_domains)
+    if domains:
+        tool_params["allowed_domains"] = domains
     resp = requests.post(
         f"{base_url.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -117,10 +127,7 @@ def _openrouter_search(query: str, *, model: str, api_key: str,
                 {"role": "system", "content": "Return strict JSON only."},
                 {"role": "user", "content": SEARCH_PROMPT.format(query=query, n=max_results)},
             ],
-            "tools": [{
-                "type": "openrouter:web_search",
-                "parameters": {"max_results": max_results, "max_total_results": max_results},
-            }],
+            "tools": [{"type": "openrouter:web_search", "parameters": tool_params}],
         },
         timeout=timeout,
     )
@@ -142,11 +149,13 @@ def _ddg_search(query: str, max_results: int) -> list[dict]:
 
 
 def _run_one(query: str, *, max_results: int, api_key: str,
-             search_model: str, base_url: str) -> list[dict]:
+             search_model: str, base_url: str,
+             allowed_domains: list[str] | None = None) -> list[dict]:
     if api_key:
         try:
             found = _openrouter_search(query, model=search_model, api_key=api_key,
-                                       base_url=base_url, max_results=max_results)
+                                       base_url=base_url, max_results=max_results,
+                                       allowed_domains=allowed_domains)
             if found:
                 return found
         except Exception:
@@ -161,6 +170,7 @@ def fanout_search(topic: str, category: str, country: str = "",
                   max_results_per_query: int = 5, api_key: str = "",
                   search_model: str = "deepseek/deepseek-v4-flash",
                   base_url: str = "https://openrouter.ai/api/v1",
+                  allowed_domains: list[str] | None = None,
                   max_articles: int = 12) -> list[dict]:
     queries = build_queries(topic, category, country)
     if not queries:
@@ -168,7 +178,8 @@ def fanout_search(topic: str, category: str, country: str = "",
     with ThreadPoolExecutor(max_workers=min(6, len(queries))) as pool:
         batches = list(pool.map(
             lambda q: _run_one(q, max_results=max_results_per_query, api_key=api_key,
-                               search_model=search_model, base_url=base_url),
+                               search_model=search_model, base_url=base_url,
+                               allowed_domains=allowed_domains),
             queries,
         ))
     merged = [a for batch in batches for a in batch if a.get("url")]
